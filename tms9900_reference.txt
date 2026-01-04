@@ -1,0 +1,318 @@
+TMS9900 CPU Reference for LLVM Backend
+=======================================
+Extracted from TMS 9900 Microprocessor Data Manual, May 1976
+
+ARCHITECTURE OVERVIEW
+=====================
+- 16-bit CPU with 16-bit instruction word
+- 16-bit data bus, 15-bit address bus (A0-A14)
+- Memory: 65,536 bytes (32,768 words)
+- Word-addressable on even boundaries, byte instructions can address odd bytes
+- Big-endian: MSB at bit 0, LSB at bit 15
+
+REGISTER MODEL (Workspace Pointer Architecture)
+===============================================
+Three internal registers accessible to user:
+  - PC: Program Counter (16-bit)
+  - WP: Workspace Pointer (16-bit) - points to base of 16-word register file in RAM
+  - ST: Status Register (16-bit)
+
+Workspace Registers (in RAM at address WP+0 to WP+30):
+  - R0-R15: 16 general purpose registers (each 16-bit word)
+  - Located at memory address: WP + (2 * register_number)
+  - R11: Often used as return address by BL instruction
+  - R12: CRU base address register (bits 3-14 used)
+  - R13: Old WP storage during context switch
+  - R14: Old PC storage during context switch
+  - R15: Old ST storage during context switch
+
+STATUS REGISTER (ST)
+====================
+Bit  Name     Description
+0    L>       Logical Greater Than
+1    A>       Arithmetic Greater Than
+2    =        Equal
+3    C        Carry
+4    O        Overflow
+5    P        Odd Parity (byte ops)
+6    X        XOP instruction executed
+7-11 unused   (always 0)
+12-15 INT     Interrupt Mask (0-15)
+
+MEMORY MAP
+==========
+0000-003F: Interrupt vectors (16 levels, 2 words each: WP, PC)
+0040-007F: XOP trap vectors (16 XOPs, 2 words each: WP, PC)
+0080-FFFB: General memory (program, data, workspace)
+FFFC-FFFF: LOAD signal vector (WP, PC)
+
+ADDRESSING MODES
+================
+Code  Mode                          Syntax      Description
+00    Workspace Register            R           Operand is in register R
+01    Workspace Reg Indirect        *R          Register R contains address of operand
+10/0  Symbolic (Direct)             @LABEL      Next word contains address of operand
+10/n  Indexed                       @TABLE(R)   Next word + R = effective address (R!=0)
+11    WR Indirect Auto-increment    *R+         R contains addr, R incremented after
+
+INSTRUCTION SET
+===============
+
+=== DUAL OPERAND (Full addressing both operands) ===
+Format: [opcode:4][B:1][Td:2][D:4][Ts:2][S:4]
+
+Mnemonic  Opcode  B  Description              Status Affected
+A         1010    0  Add word                 0-4 (L>,A>,=,C,O)
+AB        1011    1  Add byte                 0-5
+C         1000    0  Compare word             0-2
+CB        1001    1  Compare byte             0-2,5
+S         0110    0  Subtract word            0-4
+SB        0111    1  Subtract byte            0-5
+SOC       1110    0  Set Ones Corresponding   0-2
+SOCB      1111    1  Set Ones Corr. byte      0-2,5
+SZC       0100    0  Set Zeros Corresponding  0-2
+SZCB      0101    1  Set Zeros Corr. byte     0-2,5
+MOV       1100    0  Move word                0-2
+MOVB      1101    1  Move byte                0-2,5
+
+=== DUAL OPERAND (Source general, Dest register) ===
+Format: [opcode:6][D:4][Ts:2][S:4]
+
+Mnemonic  Opcode    Description              Status
+COC       001000    Compare Ones Corr.       2 (=)
+CZC       001001    Compare Zeros Corr.      2
+XOR       001010    Exclusive OR             0-2
+MPY       001110    Multiply (32-bit result) none
+DIV       001111    Divide                   4 (O)
+
+=== SINGLE OPERAND ===
+Format: [opcode:10][Ts:2][S:4]
+
+Mnemonic  Opcode      Description            Status
+B         0000010001  Branch                 -
+BL        0000011010  Branch and Link        -
+BLWP      0000010000  Branch/Load WP         -
+CLR       0000010011  Clear to 0             -
+SETO      0000011100  Set to ones (FFFF)     -
+INV       0000010101  Invert (complement)    0-2
+NEG       0000010100  Negate (2's comp)      0-4
+ABS       0000011101  Absolute value         0-4
+SWPB      0000011011  Swap bytes             -
+INC       0000010110  Increment by 1         0-4
+INCT      0000010111  Increment by 2         0-4
+DEC       0000011000  Decrement by 1         0-4
+DECT      0000011001  Decrement by 2         0-4
+X         0000010010  Execute instruction    (per executed inst)
+
+=== XOP (Extended Operation) ===
+Format: [001011][D:4][Ts:2][S:4]
+- Traps to vector at 0040 + 4*D
+- SA stored in new WR11
+
+=== CRU MULTI-BIT ===
+Format: [opcode:6][C:4][Ts:2][S:4]
+C=0 means 16 bits, C=1-15 means that many bits
+
+Mnemonic  Opcode  Description
+LDCR      001100  Load CRU from memory
+STCR      001101  Store CRU to memory
+
+=== CRU SINGLE-BIT ===
+Format: [opcode:8][signed_disp:8]
+Displacement relative to R12 bits 3-14
+
+Mnemonic  Opcode    Description
+SBO       00011101  Set CRU bit to 1
+SBZ       00011110  Set CRU bit to 0
+TB        00011111  Test CRU bit (sets ST2)
+
+=== JUMP INSTRUCTIONS ===
+Format: [opcode:8][signed_disp:8]
+PC-relative, displacement is word count (-128 to +127 words)
+
+Mnemonic  Opcode    Condition
+JEQ       00010011  ST2=1 (Equal)
+JGT       00010101  ST1=1 (Arith Greater)
+JH        00011011  ST0=1 & ST2=0 (High)
+JHE       00010100  ST0=1 | ST2=1 (High/Equal)
+JL        00011010  ST0=0 & ST2=0 (Low)
+JLE       00010010  ST0=0 | ST2=1 (Low/Equal)
+JLT       00010001  ST1=0 & ST2=0 (Less Than)
+JMP       00010000  Unconditional
+JNC       00010111  ST3=0 (No Carry)
+JNE       00010110  ST2=0 (Not Equal)
+JNO       00011001  ST4=0 (No Overflow)
+JOC       00011000  ST3=1 (On Carry)
+JOP       00011100  ST5=1 (Odd Parity)
+
+=== SHIFT INSTRUCTIONS ===
+Format: [opcode:8][C:4][W:4]
+C=0: shift count from R0 bits 12-15 (0 means 16)
+
+Mnemonic  Opcode    Description              Status
+SLA       00001010  Shift Left Arithmetic    0-4
+SRA       00001000  Shift Right Arithmetic   0-3
+SRC       00001011  Shift Right Circular     0-3
+SRL       00001001  Shift Right Logical      0-3
+
+=== IMMEDIATE REGISTER ===
+Format: [opcode:11][N:1][W:4] + [immediate:16]
+
+Mnemonic  Opcode       Description           Status
+AI        00000010001  Add Immediate         0-4
+ANDI      00000010010  AND Immediate         0-2
+CI        00000010100  Compare Immediate     0-2
+LI        00000010000  Load Immediate        0-2
+ORI       00000010011  OR Immediate          0-2
+
+=== INTERNAL REGISTER LOAD IMMEDIATE ===
+Format: [opcode:11][N:5] + [immediate:16]
+
+Mnemonic  Opcode       Description
+LWPI      00000010111  Load WP Immediate
+LIMI      00000011000  Load Interrupt Mask
+
+=== INTERNAL REGISTER STORE ===
+Format: [opcode:11][N:1][W:4]
+
+Mnemonic  Opcode       Description
+STST      00000010110  Store ST to register
+STWP      00000010101  Store WP to register
+
+=== RETURN ===
+RTWP      0000001110NN  Return: WR15->ST, WR14->PC, WR13->WP
+
+=== EXTERNAL INSTRUCTIONS ===
+Format: [opcode:11][N:5]
+These pulse CRUCLK with code on A0-A2
+
+Mnemonic  Opcode       A0 A1 A2  Description
+IDLE      00000011010  L  H  L   Idle until interrupt
+RSET      00000011011  L  H  H   Reset (clears int mask)
+CKOF      00000011110  H  H  L   Clock off (user defined)
+CKON      00000011101  H  L  H   Clock on (user defined)
+LREX      00000011111  H  H  H   Load/restart exec
+
+
+INSTRUCTION TIMING (Clock Cycles / Memory Accesses)
+====================================================
+At 3MHz: 1 clock cycle = 333ns
+
+Instruction     Cycles  MemAccess  Notes
+------------------------------------------
+A               14      4          +addr mode
+AB              14      4          +addr mode
+ABS (MSB=0)     12      2
+ABS (MSB=1)     14      3
+AI              14      4
+ANDI            14      4
+B               8       2          +addr mode
+BL              12      3          +addr mode
+BLWP            26      6          +addr mode
+C               14      3          +addr mode
+CB              14      3          +addr mode
+CI              14      3
+CKOF            12      1
+CKON            12      1
+CLR             10      3          +addr mode
+COC             14      3          +addr mode
+CZC             14      3          +addr mode
+DEC             10      3          +addr mode
+DECT            10      3          +addr mode
+DIV (overflow)  16      3
+DIV (normal)    92-124  6          *variable
+IDLE            12      1
+INC             10      3          +addr mode
+INCT            10      3          +addr mode
+INV             10      3          +addr mode
+JMP (taken)     10      1
+JMP (not taken) 8       1
+LDCR (16 bits)  52      3
+LDCR (1-8)      20+2C   3
+LDCR (9-15)     20+2C   3
+LI              12      3
+LIMI            16      2
+LREX            12      1
+LWPI            10      2
+MOV             14      4          +addr mode
+MOVB            14      4          +addr mode
+MPY             52      5          +addr mode
+NEG             12      3          +addr mode
+ORI             14      4
+RSET            12      1
+RTWP            14      4
+S               14      4          +addr mode
+SB              14      4          +addr mode
+SBO             12      2
+SBZ             12      2
+SETO            10      3          +addr mode
+Shift (C!=0)    12+2C   3
+Shift (C=0,R0=0) 52     4
+Shift (C=0,R0=N) 20+2N  4
+SOC             14      4          +addr mode
+SOCB            14      4          +addr mode
+STCR (16 bits)  60      4
+STCR (1-7)      42      4
+STCR (8)        44      4
+STCR (9-15)     58      4
+STST            8       2
+STWP            8       2
+SWPB            10      3          +addr mode
+SZC             14      4          +addr mode
+SZCB            14      4          +addr mode
+TB              12      2
+X               8       2          +executed instruction
+XOP             36      8          +addr mode
+XOR             14      4          +addr mode
+
+Address Mode Overhead (Table A - word operations):
+Mode                    Cycles  MemAccess
+WR (Ts/Td=00)           0       0
+WR Indirect (01)        4       1
+WR Indirect Auto++ (11) 8       2
+Symbolic (10, S/D=0)    8       1
+Indexed (10, S/D!=0)    8       2
+
+Address Mode Overhead (Table B - byte operations):
+Mode                    Cycles  MemAccess
+WR (Ts/Td=00)           0       0
+WR Indirect (01)        4       1
+WR Indirect Auto++ (11) 6       2
+Symbolic (10, S/D=0)    8       1
+Indexed (10, S/D!=0)    8       2
+
+INSTRUCTION ENCODING PATTERNS
+=============================
+Bits 0-3 (or 0-5) typically identify instruction class:
+
+0000 01xxxx - Single operand, shifts
+0000 1xxxxx - Jumps
+0001 xxxxxx - Jumps
+001x xxxxxx - XOP, COC, CZC, XOR, MPY, DIV, LDCR, STCR
+01xx xxxxxx - SZC, SZCB, S, SB
+10xx xxxxxx - C, CB, A, AB
+11xx xxxxxx - MOV, MOVB, SOC, SOCB
+
+
+LLVM BACKEND STRATEGY NOTES
+===========================
+
+Workspace Pointer Approach (Minimal/Simple):
+- Treat WP as fixed frame pointer
+- R0-R10: Allocatable general purpose
+- R11: Link register (for BL instruction)
+- R12: Reserved for CRU base (if using I/O)
+- R13-R15: Reserved for context switch / can be temp
+- Implement software stack in RAM using R10 or similar as SP
+
+Key Considerations:
+1. No hardware stack - must implement in software
+2. Register-to-register ops require memory access (slow but unavoidable)
+3. Multiply result is 32-bit in two consecutive registers
+4. Divide expects 32-bit dividend in two consecutive registers
+5. Byte operations affect only high byte of register
+
+Similar LLVM backends to study:
+- MSP430: Also 16-bit, similar instruction style
+- AVR: Small register set constraints
+- Lanai: Simple, well-documented example

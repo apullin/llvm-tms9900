@@ -1,0 +1,19 @@
+# LLVM project is in separate repo
+llvm-project/
+
+# Build artifacts
+*.o
+*.bin
+*.lst
+*.zip
+
+# OS files
+.DS_Store
+
+# Editor files
+*.swp
+*~
+
+# Python
+__pycache__/
+*.pyc

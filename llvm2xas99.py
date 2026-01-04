@@ -1,0 +1,163 @@
+#!/usr/bin/env python3
+"""
+llvm2xas99.py - Convert LLVM TMS9900 assembly output to xas99-compatible format
+
+This script post-processes the assembly output from LLVM's TMS9900 backend
+to make it compatible with xas99 (the xdt99 cross-assembler).
+
+Usage:
+    llc -march=tms9900 input.ll -o - | python3 llvm2xas99.py > output.asm
+
+Or:
+    llc -march=tms9900 input.ll -o temp.s
+    python3 llvm2xas99.py temp.s > output.asm
+
+Transformations applied:
+    .text           -> ; === TEXT SECTION ===
+    .data           -> ; === DATA SECTION ===
+    .bss            -> ; === BSS SECTION ===
+    .rodata         -> ; === RODATA SECTION ===
+    .p2align N      -> EVEN  (for word alignment)
+    DEF symbol      -> DEF symbol  (already correct from MCAsmInfo)
+    @symbol refs    -> REF symbol (for external symbols like libcalls)
+    .type/.size/etc -> (removed - ELF-specific)
+    END             -> END (added at end of file)
+
+The script preserves the structure while making it xas99-compatible.
+External references (like __mulsi3, __divsi3) are automatically detected
+and REF directives are generated for them.
+"""
+
+import sys
+import re
+
+def convert_line(line):
+    """Convert a single line from LLVM format to xas99 format."""
+
+    # Section directives -> comments
+    if re.match(r'^\s*\.text\s*$', line):
+        return '; === TEXT SECTION ===\n'
+    if re.match(r'^\s*\.data\s*$', line):
+        return '; === DATA SECTION ===\n'
+    if re.match(r'^\s*\.bss\s*$', line):
+        return '; === BSS SECTION ===\n'
+    if re.match(r'^\s*\.rodata\s*$', line):
+        return '; === RODATA SECTION ===\n'
+
+    # .section directive -> comment
+    if re.match(r'^\s*\.section\s+', line):
+        section_name = re.sub(r'^\s*\.section\s+', '', line).strip()
+        return f'; === SECTION {section_name} ===\n'
+
+    # .p2align -> EVEN (for word alignment on 16-bit TMS9900)
+    # .p2align 1 means align to 2^1 = 2 bytes = word boundary
+    if re.match(r'^\s*\.p2align\s+', line):
+        return '\tEVEN\n'
+
+    # .comm symbol,size,align -> BSS symbol size (approximate)
+    match = re.match(r'^\s*\.comm\s+(\w+)\s*,\s*(\d+)', line)
+    if match:
+        symbol = match.group(1)
+        size = int(match.group(2))
+        words = (size + 1) // 2  # Round up to words
+        return f'{symbol}\tBSS {words * 2}\n'
+
+    # Remove unsupported ELF directives entirely
+    if re.match(r'^\s*\.(type|size|ident|addrsig|addrsig_sym|cfi_|file)\s*', line):
+        return ''  # Remove these lines
+
+    # .zero N -> emit N zero bytes as DATA 0 statements
+    match = re.match(r'^\s*\.zero\s+(\d+)', line)
+    if match:
+        size = int(match.group(1))
+        if size == 0:
+            return ''
+        words = (size + 1) // 2
+        return '\tDATA 0\n' * words
+
+    # .byte -> BYTE (should already be handled by MCAsmInfo, but just in case)
+    line = re.sub(r'^\s*\.byte\s+', '\tBYTE ', line)
+
+    # .word/.short -> DATA (should already be handled)
+    line = re.sub(r'^\s*\.(word|short)\s+', '\tDATA ', line)
+
+    # .long/.4byte -> two DATA statements (32-bit as two 16-bit words)
+    match = re.match(r'^\s*\.(long|4byte)\s+(.+)', line)
+    if match:
+        value = match.group(2).strip()
+        # This is a simplification - proper handling would parse the value
+        return f'\tDATA {value} >> 16\n\tDATA {value} & 0xFFFF\n'
+
+    # .ascii/.asciz with quotes - convert to TEXT
+    match = re.match(r'^\s*\.asciz?\s+"(.*)"\s*$', line)
+    if match:
+        text = match.group(1)
+        # xas99 TEXT directive
+        if line.strip().startswith('.asciz'):
+            # Null-terminated - append a BYTE 0
+            return f"\tTEXT '{text}'\n\tBYTE 0\n"
+        else:
+            return f"\tTEXT '{text}'\n"
+
+    # Keep everything else as-is
+    return line
+
+def convert_file(input_stream, output_stream):
+    """Convert entire file from LLVM format to xas99 format."""
+
+    # First pass: collect all lines and find symbols
+    lines = list(input_stream)
+
+    # Find all defined labels (start of line, end with colon)
+    defined_labels = set()
+    for line in lines:
+        match = re.match(r'^(\w+):', line)
+        if match:
+            defined_labels.add(match.group(1))
+        # Also capture DEF directives
+        match = re.match(r'^\s*DEF\s+(\w+)', line)
+        if match:
+            defined_labels.add(match.group(1))
+
+    # Find all referenced symbols (BL @symbol, B @symbol, MOV @symbol, etc.)
+    referenced_symbols = set()
+    for line in lines:
+        # Match @symbol references (memory references)
+        # Must start with a letter (not a digit) to avoid @2(R10) indexed addressing
+        for match in re.finditer(r'@([A-Za-z_]\w*)', line):
+            sym = match.group(1)
+            # Skip if it's a defined label
+            if sym not in defined_labels:
+                referenced_symbols.add(sym)
+
+    # Write header comment
+    output_stream.write("; Generated by llvm2xas99.py\n")
+    output_stream.write("; Converted from LLVM TMS9900 backend output\n")
+    output_stream.write(";\n")
+
+    # Write REF directives for external symbols (like libcalls)
+    if referenced_symbols:
+        output_stream.write("; External references (libcalls)\n")
+        for sym in sorted(referenced_symbols):
+            output_stream.write(f"\tREF {sym}\n")
+        output_stream.write(";\n")
+
+    for line in lines:
+        converted = convert_line(line)
+        if converted:  # Skip empty results (removed lines)
+            output_stream.write(converted)
+
+    # xas99 requires END directive
+    output_stream.write("\n\tEND\n")
+
+def main():
+    if len(sys.argv) > 1:
+        # Read from file
+        with open(sys.argv[1], 'r') as f:
+            convert_file(f, sys.stdout)
+    else:
+        # Read from stdin
+        convert_file(sys.stdin, sys.stdout)
+
+if __name__ == '__main__':
+    main()
