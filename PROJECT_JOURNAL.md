@@ -241,12 +241,28 @@ The translator automatically detects references to external symbols (like libcal
     REF __divsi3
 ```
 
-### Why Not Native xas99 Output?
+### Native xas99 Dialect (Update)
 
-We considered modifying LLVM's MC layer to output native xas99 format directly, but:
-1. LLVM's assembly emission is deeply tied to ELF conventions
-2. A post-processor is simpler, more maintainable, and works reliably
-3. The translator can evolve independently of the LLVM backend
+We added native xas99 dialect support directly to the LLVM backend:
+
+```bash
+clang --target=tms9900 -O2 -S -fno-addrsig \
+      -mllvm -tms9900-asm-dialect=xas99 test.c -o test.s
+```
+
+**Features**:
+- Hex immediates as `>XXXX` format (not `0x...`)
+- Negative values as two's complement (e.g., `-1` → `>FFFF`)
+- `DEF` for exported symbols
+- `BSS N` for zero-fill (not `.zero N`)
+
+**Quirk**: LLVM's MC layer always emits certain directives (`.text`, `.data`, `.bss`, `.p2align`) when switching sections. These cannot be suppressed without a custom MCStreamer. Workaround:
+
+```bash
+grep -v '^\s*\.' test.s > test_clean.s
+```
+
+For complex projects, `llvm2xas99.py` still provides more comprehensive conversion
 
 ---
 
@@ -263,9 +279,9 @@ Located in `runtime/tms9900_rt.asm`, this provides compiler support functions:
 | `__udivsi3` | 32-bit unsigned divide | Implemented |
 | `__modsi3` | 32-bit signed remainder | Implemented |
 | `__umodsi3` | 32-bit unsigned remainder | Implemented |
-| `__ashlsi3` | 32-bit left shift | Not yet |
-| `__ashrsi3` | 32-bit arithmetic right shift | Not yet |
-| `__lshrsi3` | 32-bit logical right shift | Not yet |
+| `__ashlsi3` | 32-bit left shift | Implemented |
+| `__ashrsi3` | 32-bit arithmetic right shift | Implemented |
+| `__lshrsi3` | 32-bit logical right shift | Implemented |
 
 ### Building
 
@@ -517,6 +533,27 @@ python3 ~/personal/ti99/xdt99/xas99.py -R test.asm -b -o test.bin
 # Trigger IRQ level 1 after 500 instructions
 ./tms9900-trace --irq=1@500 -s 0x0200 test.bin
 ```
+
+### Minimum Working Example
+
+The `tests/` directory contains an end-to-end test that validates the complete toolchain:
+
+```bash
+./tests/run_mwe_test.sh
+```
+
+**Test Coverage** (`tests/mwe_test.c`):
+- Array operations with pointer arithmetic
+- Dot product computation (exercises MPY instruction)
+- Bubble sort (exercises comparisons, swaps, nested loops)
+- Global variable access
+- Function calls
+
+**Expected Results**:
+- `result_dot1` = 55 (0x0037) - dot product before sort
+- `result_dot2` = 86 (0x0056) - dot product after sort
+- `sorted_array` = {1, 2, 5, 8, 9}
+- Return value in R0 = 141 (0x008D)
 
 ---
 
