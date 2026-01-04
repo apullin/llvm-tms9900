@@ -190,11 +190,13 @@ The backend is **functional** and can compile real C programs.
 | `__udivsi3` | 32-bit unsigned divide |
 | `__modsi3` | 32-bit signed modulo |
 | `__umodsi3` | 32-bit unsigned modulo |
+| `__ashlsi3` | 32-bit left shift |
+| `__lshrsi3` | 32-bit logical right shift |
+| `__ashrsi3` | 32-bit arithmetic right shift |
 
 ### Not Yet Implemented
 
 - Floating point (would need software float library)
-- 32-bit shifts (currently uses libcalls but runtime not written yet)
 - Direct binary output (requires assembler post-processing)
 - Debug info / DWARF
 

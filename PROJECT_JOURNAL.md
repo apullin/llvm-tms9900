@@ -47,9 +47,9 @@ The TMS9900 is a 16-bit CPU, so 32-bit operations require special handling:
 
 - **Multiplication**: LLVM expands to partial products using 16-bit multiplies.
 
-- **Division/Remainder**: Uses libcalls (`__divsi3`, `__udivsi3`, `__modsi3`, `__umodsi3`) from libtms9900 because inline expansion would be too complex.
+- **Division/Remainder**: Uses libcalls (`__divsi3`, `__udivsi3`, `__modsi3`, `__umodsi3`) from the runtime library because inline expansion would be too complex.
 
-- **Shifts**: Uses libcalls (`__ashlsi3`, `__ashrsi3`, `__lshrsi3`) from libtms9900.
+- **Shifts**: Variable-amount shifts use libcalls (`__ashlsi3`, `__ashrsi3`, `__lshrsi3`) from the runtime library. Constant shifts are optimized by LLVM at compile time. The runtime implementation uses a word-swap optimization for shifts ≥16 bits, then loops for the remaining 0-15 bits. Edge cases handled: shift by 0 (return unchanged), shift ≥32 (return 0 or sign-extended -1 for arithmetic right shift).
 
 #### 16-bit Multiply and Divide
 The TMS9900 has native multiply and divide instructions with quirks:
@@ -558,4 +558,4 @@ python3 ~/personal/ti99/xdt99/xas99.py -R test.asm -b -o test.bin
 
 ---
 
-*Project Journal - Last Updated: January 2026*
+*Project Journal - Last Updated: January 4, 2026*

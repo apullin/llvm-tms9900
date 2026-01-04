@@ -13,6 +13,9 @@
        DEF  __udivsi3
        DEF  __modsi3
        DEF  __umodsi3
+       DEF  __ashlsi3
+       DEF  __lshrsi3
+       DEF  __ashrsi3
 
 ;======================================================================
 ; __mulsi3 - Signed/Unsigned 32-bit multiply
@@ -401,5 +404,155 @@ SMOD_RET:
 
 SM_SIGN DATA 0
 SMSAV11 DATA 0
+
+;======================================================================
+; __ashlsi3 - 32-bit left shift
+; Input:  R0:R1 = value (high:low)
+;         R2 = shift amount
+; Output: R0:R1 = value << shift_amount
+;
+; Algorithm: Loop shifting 1 bit at a time
+;======================================================================
+__ashlsi3:
+       MOV  R2,R2               ; Check shift amount
+       JEQ  ASHL_RET            ; If 0, return unchanged
+
+       ; Check for shift >= 32
+       CI   R2,32
+       JL   ASHL_OK
+       CLR  R0                  ; Return 0
+       CLR  R1
+       B    *R11
+
+ASHL_OK:
+       ; Check for shift >= 16 (word shift optimization)
+       CI   R2,16
+       JL   ASHL_LOOP
+       ; Shift by 16: move low word to high, clear low
+       MOV  R1,R0
+       CLR  R1
+       AI   R2,-16              ; Remaining shift
+       JEQ  ASHL_RET
+
+ASHL_LOOP:
+       ; Shift R0:R1 left by 1 bit
+       ; Must shift R0 first, then use carry from R1 shift
+       SLA  R0,1                ; Shift high word left (makes room in bit 0)
+       SLA  R1,1                ; Shift low word left (sets carry from its MSB)
+       JNC  ASHL_NC             ; If no carry (MSB was 0)
+       INC  R0                  ; Set LSB of high word
+ASHL_NC:
+       DEC  R2
+       JNE  ASHL_LOOP
+
+ASHL_RET:
+       B    *R11
+
+;======================================================================
+; __lshrsi3 - 32-bit logical right shift
+; Input:  R0:R1 = value (high:low)
+;         R2 = shift amount
+; Output: R0:R1 = value >> shift_amount (zero fill)
+;
+; Algorithm: Loop shifting 1 bit at a time
+;======================================================================
+__lshrsi3:
+       MOV  R2,R2               ; Check shift amount
+       JEQ  LSHR_RET            ; If 0, return unchanged
+
+       ; Check for shift >= 32
+       CI   R2,32
+       JL   LSHR_OK
+       CLR  R0                  ; Return 0
+       CLR  R1
+       B    *R11
+
+LSHR_OK:
+       ; Check for shift >= 16 (word shift optimization)
+       CI   R2,16
+       JL   LSHR_LOOP
+       ; Shift by 16: move high word to low, clear high
+       MOV  R0,R1
+       CLR  R0
+       AI   R2,-16              ; Remaining shift
+       JEQ  LSHR_RET
+
+LSHR_LOOP:
+       ; Shift R0:R1 right by 1 bit (logical)
+       ; Need to capture LSB of R0 before shifting
+       MOV  R0,R3               ; Save R0
+       ANDI R3,1                ; Isolate LSB
+       SRL  R0,1                ; Shift high word right
+       SRL  R1,1                ; Shift low word right
+       ; If R0's LSB was set, set R1's MSB
+       MOV  R3,R3
+       JEQ  LSHR_NC
+       ORI  R1,>8000            ; Set MSB of low word
+LSHR_NC:
+       DEC  R2
+       JNE  LSHR_LOOP
+
+LSHR_RET:
+       B    *R11
+
+;======================================================================
+; __ashrsi3 - 32-bit arithmetic right shift
+; Input:  R0:R1 = value (high:low)
+;         R2 = shift amount
+; Output: R0:R1 = value >> shift_amount (sign extend)
+;
+; Algorithm: Loop shifting 1 bit at a time, preserving sign
+;======================================================================
+__ashrsi3:
+       MOV  R2,R2               ; Check shift amount
+       JEQ  ASHR_RET            ; If 0, return unchanged
+
+       ; Check for shift >= 32
+       CI   R2,32
+       JL   ASHR_OK
+       ; Return all 0s or all 1s based on sign
+       MOV  R0,R0               ; Test sign
+       JLT  ASHR_NEG
+       CLR  R0                  ; Positive: return 0
+       CLR  R1
+       B    *R11
+ASHR_NEG:
+       SETO R0                  ; Negative: return -1
+       SETO R1
+       B    *R11
+
+ASHR_OK:
+       ; Check for shift >= 16 (word shift optimization)
+       CI   R2,16
+       JL   ASHR_LOOP
+       ; Shift by 16: move high word to low, sign extend high
+       MOV  R0,R1               ; High to low
+       MOV  R0,R0               ; Test sign
+       JLT  ASHR_SEXT
+       CLR  R0                  ; Positive: clear high
+       JMP  ASHR_CHK16
+ASHR_SEXT:
+       SETO R0                  ; Negative: all 1s in high
+ASHR_CHK16:
+       AI   R2,-16              ; Remaining shift
+       JEQ  ASHR_RET
+
+ASHR_LOOP:
+       ; Shift R0:R1 right by 1 bit (arithmetic)
+       ; Need to capture LSB of R0 before shifting
+       MOV  R0,R3               ; Save R0
+       ANDI R3,1                ; Isolate LSB
+       SRA  R0,1                ; Shift high word right (sign preserving)
+       SRL  R1,1                ; Shift low word right
+       ; If R0's LSB was set, set R1's MSB
+       MOV  R3,R3
+       JEQ  ASHR_NC
+       ORI  R1,>8000            ; Set MSB of low word
+ASHR_NC:
+       DEC  R2
+       JNE  ASHR_LOOP
+
+ASHR_RET:
+       B    *R11
 
        END
