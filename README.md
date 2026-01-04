@@ -80,18 +80,35 @@ ninja clang llc
 git clone git@github.com:apullin/llvm-tms9900-tools.git
 ```
 
+## Toolchain Overview
+
+The current toolchain relies on external tools for assembly and linking:
+
+```
+┌─────────┐    ┌─────────┐    ┌─────────────┐    ┌─────────┐    ┌──────────┐
+│  C code │───▶│  clang  │───▶│ LLVM generic│───▶│llvm2xas99│───▶│  xas99   │───▶ Binary
+│ (.c)    │    │         │    │  asm (.s)   │    │  (.py)  │    │  (.py)   │
+└─────────┘    └─────────┘    └─────────────┘    └─────────┘    └──────────┘
+```
+
+**Why the extra steps?**
+
+LLVM's assembly output uses its own syntax conventions (`.text`, `.word`, `0x1234` hex literals, etc.), but no standalone TMS9900 assembler understands this format. We use [xas99](https://github.com/endlos99/xdt99) from the xdt99 toolkit as our assembler and linker, which expects traditional TI assembler syntax (`DATA`, `>1234` hex literals, `DEF`/`REF` for symbols, etc.).
+
+The `llvm2xas99.py` script bridges this gap by converting LLVM's assembly output to xas99-compatible format. This is a temporary solution—future work may add native xas99 dialect output directly from LLVM or implement a proper MCCodeEmitter for direct binary generation.
+
 ## Usage
 
 ### Compile C to TMS9900 Assembly
 
 ```bash
-# Using clang driver
+# Using clang driver (outputs LLVM-style assembly)
 ./bin/clang --target=tms9900 -O2 -S hello.c -o hello.s
 
 # Convert to xas99 format
 python3 llvm2xas99.py hello.s > hello.asm
 
-# Assemble with xas99 (from xdt99 toolkit)
+# Assemble and link with xas99 (from xdt99 toolkit)
 xas99.py -R hello.asm -b -o hello.bin
 ```
 
@@ -152,7 +169,7 @@ The backend is **functional** and can compile real C programs.
 
 ## Testing
 
-### Using tms9900-trace Simulator
+Development and testing has been done using [tms9900-trace](https://github.com/apullin/tms9900-trace), a standalone TMS9900 CPU simulator derived from ti99sim. This provides bare CPU execution with flat RAM, which is ideal for testing compiler output in isolation.
 
 ```bash
 # Assemble to binary
@@ -162,12 +179,7 @@ xas99.py -R -b test.asm -o test.bin
 tms9900-trace -l 0x8000 -e 0x8000 -w 0x8300 -n 1000 test.bin
 ```
 
-### Other Test Environments
-
-- **ti99sim** - TI-99/4A simulator
-- **MAME** - TMS9900 emulation
-- **Classic99** - Windows TI-99/4A emulator
-- **js99er.net** - Browser-based emulator
+**Note:** Full TI-99/4A system testing has not yet been performed. The goal is to support real TI-99/4A programs, but coexistence with the TI-99/4A memory map (GROM, VDP, VRAM, cartridge ROM) is an open question that will be addressed in future project phases.
 
 ## Resources
 
