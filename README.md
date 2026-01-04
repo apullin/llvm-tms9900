@@ -95,7 +95,29 @@ The current toolchain relies on external tools for assembly and linking:
 
 LLVM's assembly output uses its own syntax conventions (`.text`, `.word`, `0x1234` hex literals, etc.), but no standalone TMS9900 assembler understands this format. We use [xas99](https://github.com/endlos99/xdt99) from the xdt99 toolkit as our assembler and linker, which expects traditional TI assembler syntax (`DATA`, `>1234` hex literals, `DEF`/`REF` for symbols, etc.).
 
-The `llvm2xas99.py` script bridges this gap by converting LLVM's assembly output to xas99-compatible format. This is a temporary solution—future work may add native xas99 dialect output directly from LLVM or implement a proper MCCodeEmitter for direct binary generation.
+The `llvm2xas99.py` script bridges this gap by converting LLVM's assembly output to xas99-compatible format.
+
+### xas99 Dialect (Native Support)
+
+The LLVM backend now includes native xas99 dialect support, which outputs assembly that xas99 can directly assemble (with minimal filtering):
+
+```bash
+# Compile with xas99 dialect
+clang --target=tms9900 -O2 -S -fno-addrsig \
+      -mllvm -tms9900-asm-dialect=xas99 test.c -o test.s
+
+# Filter remaining LLVM directives and assemble
+grep -v '^\s*\.' test.s > test_clean.s
+xas99.py -R test_clean.s -b -o test.bin
+```
+
+The xas99 dialect:
+- Outputs hex immediates as `>XXXX` format (e.g., `LI R0,>1234`)
+- Uses `DEF` for symbol exports
+- Requires `-fno-addrsig` to suppress LLVM's address significance table
+- Requires filtering `.text` directive (the `grep -v` step above)
+
+For more complex projects or if you need additional transformations, the `llvm2xas99.py` script provides more comprehensive conversion.
 
 ## Usage
 
