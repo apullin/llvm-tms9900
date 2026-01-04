@@ -78,14 +78,14 @@ Defined in `TMS9900CallingConv.td`:
 
 | Register | Purpose |
 |----------|---------|
-| R0-R3 | First 4 arguments / return values |
-| R4-R9 | Scratch (caller-saved) |
+| R0 | Return value |
+| R1-R9 | Arguments (first 9 words), caller-saved |
 | R10 | Stack Pointer (SP) |
 | R11 | Link Register (return address) |
 | R12 | Scratch (caller-saved) |
 | R13-R15 | Callee-saved |
 
-- **32-bit values** use register pairs: R0:R1 (high:low) for first, R2:R3 for second
+- **32-bit values** use register pairs: R0:R1 (high:low) for return, R1:R2, R3:R4 for args
 - **Additional arguments** spill to the stack
 - **Stack grows downward** (high to low addresses)
 
@@ -250,28 +250,32 @@ We considered modifying LLVM's MC layer to output native xas99 format directly, 
 
 ---
 
-## Runtime Library (libtms9900)
+## Runtime Library
 
-Located in `/libtms9900/`, this provides compiler support functions:
+Located in `runtime/tms9900_rt.asm`, this provides compiler support functions:
 
 ### Functions
 
-| Function | Purpose |
-|----------|---------|
-| `__mulsi3` | 32-bit multiply |
-| `__divsi3` | 32-bit signed divide |
-| `__udivsi3` | 32-bit unsigned divide |
-| `__modsi3` | 32-bit signed remainder |
-| `__umodsi3` | 32-bit unsigned remainder |
-| `__ashlsi3` | 32-bit left shift |
-| `__ashrsi3` | 32-bit arithmetic right shift |
-| `__lshrsi3` | 32-bit logical right shift |
+| Function | Purpose | Status |
+|----------|---------|--------|
+| `__mulsi3` | 32-bit multiply | Implemented |
+| `__divsi3` | 32-bit signed divide | Implemented |
+| `__udivsi3` | 32-bit unsigned divide | Implemented |
+| `__modsi3` | 32-bit signed remainder | Implemented |
+| `__umodsi3` | 32-bit unsigned remainder | Implemented |
+| `__ashlsi3` | 32-bit left shift | Not yet |
+| `__ashrsi3` | 32-bit arithmetic right shift | Not yet |
+| `__lshrsi3` | 32-bit logical right shift | Not yet |
 
 ### Building
 
 ```bash
-cd libtms9900
-xas99.py -R -o libtms9900.o mul32.asm div32.asm shift32.asm
+# Assemble standalone object
+xas99.py -R runtime/tms9900_rt.asm -o tms9900_rt.o
+
+# Or include directly in your program
+cat your_code.asm runtime/tms9900_rt.asm > combined.asm
+xas99.py -R combined.asm -b -o program.bin
 ```
 
 ---
