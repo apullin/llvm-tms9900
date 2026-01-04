@@ -113,9 +113,18 @@ xas99.py -R test_clean.s -b -o test.bin
 
 The xas99 dialect:
 - Outputs hex immediates as `>XXXX` format (e.g., `LI R0,>1234`)
+- Outputs negative values as two's complement (e.g., `>FFFF` for -1)
 - Uses `DEF` for symbol exports
+- Uses `BSS` for zero-filled data (not `.zero`)
 - Requires `-fno-addrsig` to suppress LLVM's address significance table
-- Requires filtering `.text` directive (the `grep -v` step above)
+
+**Quirk:** LLVM's MC layer always emits `.text`, `.data`, `.bss`, and `.p2align` directives when switching sections or aligning data. These are deeply embedded in LLVM's machine code infrastructure and cannot be suppressed without writing a custom MCStreamer. The simple workaround is to filter them out:
+
+```bash
+grep -v '^\s*\.' test.s > test_clean.s
+```
+
+This is a known limitation that will be resolved when we implement a native TMS9900 assembler or direct object emission.
 
 For more complex projects or if you need additional transformations, the `llvm2xas99.py` script provides more comprehensive conversion.
 
@@ -193,12 +202,38 @@ The backend is **functional** and can compile real C programs.
 
 Development and testing has been done using [tms9900-trace](https://github.com/apullin/tms9900-trace), a standalone TMS9900 CPU simulator derived from ti99sim. This provides bare CPU execution with flat RAM, which is ideal for testing compiler output in isolation.
 
+### Minimum Working Example
+
+The `tests/` directory contains a minimum working example that exercises the compiler:
+
+```bash
+# Run the MWE test (requires xas99 and tms9900-trace)
+./tests/run_mwe_test.sh
+```
+
+The test (`tests/mwe_test.c`) performs:
+1. Dot product of two 5-element arrays → result: 55
+2. Bubble sort on one array
+3. Dot product again (with sorted array) → result: 86
+4. Returns sum (141 = 0x8D)
+
+Expected memory results after execution:
+- `result_dot1` = 0x0037 (55)
+- `result_dot2` = 0x0056 (86)
+- `sorted_array` = {1, 2, 5, 8, 9}
+- `R0` = 0x008D (141)
+
+### Manual Testing
+
 ```bash
 # Assemble to binary
 xas99.py -R -b test.asm -o test.bin
 
 # Run through simulator
 tms9900-trace -l 0x8000 -e 0x8000 -w 0x8300 -n 1000 test.bin
+
+# With memory dump
+tms9900-trace -l 0x8000 -e 0x8000 -w 0x8300 -n 1000 -d 0x8000:256 test.bin
 ```
 
 **Note:** Full TI-99/4A system testing has not yet been performed. The goal is to support real TI-99/4A programs, but coexistence with the TI-99/4A memory map (GROM, VDP, VRAM, cartridge ROM) is an open question that will be addressed in future project phases.
