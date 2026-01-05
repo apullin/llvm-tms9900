@@ -687,4 +687,23 @@ The object file generation was verified by:
 
 ---
 
+## Development Log
+
+### 2026-01-04 DONE xas99-style labels without colons in AsmParser
+
+**What**: Implemented support for xas99-style labels that don't require colons (e.g., `START LI R0,>1234` instead of `START: LI R0,>1234`)
+
+**Where**: `llvm/lib/Target/TMS9900/AsmParser/TMS9900AsmParser.cpp` - added `isKnownMnemonic()`, `isKnownDirective()`, modified `ParseInstruction()`
+
+**Why**: xas99 and traditional TI assembler syntax uses labels without colons. This enables direct assembly of existing TI-99/4A code and interoperability with the xas99 toolchain.
+
+**Technical notes**:
+- Added StringSaver member to properly manage string lifetime when lowercasing mnemonics
+- Labels are uppercased for case-insensitive symbol matching (xas99 convention)
+- When identifier is not a known mnemonic/directive, emit it as a label then parse rest of line as actual instruction
+- Both LLVM-style (with colons) and xas99-style (without) produce identical object files
+- Verified with `clang --target=tms9900 -c test.S -o test.o`
+
+---
+
 *Project Journal - Last Updated: January 4, 2026*
