@@ -82,20 +82,38 @@ git clone git@github.com:apullin/llvm-tms9900-tools.git
 
 ## Toolchain Overview
 
-The current toolchain relies on external tools for assembly and linking:
+The backend supports **direct machine code emission** - no external assembler required:
+
+```
+┌─────────┐    ┌─────────┐    ┌─────────────┐    ┌──────────────┐
+│  C code │───▶│  clang  │───▶│  ELF object │───▶│   objcopy    │───▶ Raw Binary
+│ (.c)    │    │  -c     │    │    (.o)     │    │  -O binary   │     for TMS9900
+└─────────┘    └─────────┘    └─────────────┘    └──────────────┘
+```
+
+**Direct Object Workflow** (recommended):
+```bash
+# Compile to ELF object file
+clang --target=tms9900 -c program.c -o program.o
+
+# Extract raw binary for loading into TMS9900 memory
+llvm-objcopy -O binary program.o program.bin
+
+# Or Intel HEX format
+llvm-objcopy -O ihex program.o program.hex
+```
+
+**Legacy Assembly Workflow** (still supported):
+For integration with existing xas99-based projects, you can still generate assembly:
 
 ```
 ┌─────────┐    ┌─────────┐    ┌─────────────┐    ┌─────────┐    ┌──────────┐
 │  C code │───▶│  clang  │───▶│ LLVM generic│───▶│llvm2xas99│───▶│  xas99   │───▶ Binary
-│ (.c)    │    │         │    │  asm (.s)   │    │  (.py)  │    │  (.py)   │
+│ (.c)    │    │  -S     │    │  asm (.s)   │    │  (.py)  │    │  (.py)   │
 └─────────┘    └─────────┘    └─────────────┘    └─────────┘    └──────────┘
 ```
 
-**Why the extra steps?**
-
-LLVM's assembly output uses its own syntax conventions (`.text`, `.word`, `0x1234` hex literals, etc.), but no standalone TMS9900 assembler understands this format. We use [xas99](https://github.com/endlos99/xdt99) from the xdt99 toolkit as our assembler and linker, which expects traditional TI assembler syntax (`DATA`, `>1234` hex literals, `DEF`/`REF` for symbols, etc.).
-
-The `llvm2xas99.py` script bridges this gap by converting LLVM's assembly output to xas99-compatible format.
+The `llvm2xas99.py` script converts LLVM's assembly output to xas99-compatible format. **This is now vestigial** - retained for compatibility with existing workflows, but new projects should use direct object emission.
 
 ### xas99 Dialect (Native Support)
 
@@ -197,8 +215,9 @@ The backend is **functional** and can compile real C programs.
 ### Not Yet Implemented
 
 - Floating point (would need software float library)
-- Direct binary output (requires assembler post-processing)
 - Debug info / DWARF
+- TMS9900 disassembler (for llvm-objdump)
+- Native linker support (use objcopy for single-file, or link externally)
 
 ## Testing
 

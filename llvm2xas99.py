@@ -2,6 +2,16 @@
 """
 llvm2xas99.py - Convert LLVM TMS9900 assembly output to xas99-compatible format
 
+*** VESTIGIAL ***
+This script is now vestigial, as the LLVM TMS9900 backend supports direct
+machine code emission to ELF object files. The recommended workflow is:
+    clang --target=tms9900 -c program.c -o program.o
+    llvm-objcopy -O binary program.o program.bin
+
+This script is retained for compatibility with existing xas99-based workflows
+and may be removed in a future release if no longer needed.
+*** END VESTIGIAL ***
+
 This script post-processes the assembly output from LLVM's TMS9900 backend
 to make it compatible with xas99 (the xdt99 cross-assembler).
 

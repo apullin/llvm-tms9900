@@ -557,6 +557,98 @@ The `tests/` directory contains an end-to-end test that validates the complete t
 
 ---
 
+## Direct Machine Code Emission (January 2026)
+
+### Overview
+
+We implemented direct ELF object file emission, eliminating the need for an external assembler (xas99) in many workflows. The compiler can now produce machine code bytes directly.
+
+### Implementation
+
+Created the MCTargetDesc layer with the following components:
+
+| File | Purpose |
+|------|---------|
+| `TMS9900FixupKinds.h` | Defines relocation types (16-bit absolute, 8-bit PC-relative, 16-bit PC-relative) |
+| `TMS9900MCCodeEmitter.cpp` | Encodes MCInst to binary bytes, big-endian |
+| `TMS9900AsmBackend.cpp` | Handles fixup application, creates ELF writer |
+| `TMS9900ELFObjectWriter.cpp` | Maps fixups to ELF relocation types |
+| `TMS9900MCTargetDesc.cpp` | Registers all MC components |
+
+### Instruction Format Variants
+
+The TableGen format classes needed variants to handle different operand patterns for the same encoding:
+
+**Two-Address Operations** (A, S, SOC, SZC, XOR):
+- Input: `(outs $rd), (ins $rs1, $rs2)` with `$rd = $rs1` constraint
+- Need to encode `$rd` and `$rs2` (not `$rs1` which is tied)
+- Created: `Format1_Reg_TwoAddr`, `Format2_Reg_TwoAddr`
+
+**Compare Operations** (C, CI):
+- No output operand, just sets flags
+- Created: `Format1_Reg_Cmp`, `Format8_Cmp`
+
+**Shift Operations** (SLA, SRA, SRL, SRC):
+- Two-address with count operand
+- Created: `Format7_TwoAddr`, `Format7_R0Count`
+
+**Implicit Register Operations** (MPY, DIV, RET):
+- Some operands are hardcoded (R0 for MPY/DIV, R11 for RET)
+- Created: `Format2_Reg_R0`, `Format3_Reg_R11`
+
+### Usage
+
+```bash
+# Compile C to ELF object file
+clang --target=tms9900 -c source.c -o source.o
+
+# Examine the object file
+llvm-readelf -a source.o
+
+# Extract raw binary (for ROM/RAM loading)
+llvm-objcopy -O binary source.o source.bin
+
+# Or Intel HEX format
+llvm-objcopy -O ihex source.o source.hex
+```
+
+### ELF Details
+
+- **Class**: ELF32
+- **Endianness**: Big-endian (MSB)
+- **Machine**: None (EM_NONE = 0) - no official ELF machine type for TMS9900
+- **OS/ABI**: Standalone (embedded)
+
+### Workflow Comparison
+
+**Old Workflow** (still supported):
+```
+C code → clang -S → assembly → llvm2xas99.py → xas99.py → binary
+```
+
+**New Workflow**:
+```
+C code → clang -c → ELF object → objcopy → raw binary
+```
+
+The new workflow is simpler and doesn't require external Python scripts or xas99.
+
+### Limitations
+
+- No disassembler yet (llvm-objdump can't disassemble TMS9900)
+- No linker support (use objcopy for single-file programs, or external linker)
+- No debug info emission
+
+### Verification
+
+The object file generation was verified by:
+1. Compiling a simple function to .o file
+2. Examining ELF structure with llvm-readelf
+3. Extracting .text section with objcopy
+4. Inspecting machine code bytes with xxd
+
+---
+
 ## File Reference
 
 ### TableGen Files (`.td`)
