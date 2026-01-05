@@ -706,4 +706,69 @@ The object file generation was verified by:
 
 ---
 
+### 2026-01-04 DONE .org directive support in AsmParser
+
+**What**: Added `.org` directive parsing to set the assembly origin address.
+
+**Where**: `llvm/lib/Target/TMS9900/AsmParser/TMS9900AsmParser.cpp` - `parseDirective()`, `parseDirectiveOrg()`
+
+**Why**: TI-99/4A cartridges must be placed at specific addresses (0x6000 for ROM). The `.org` directive (and xas99's `AORG`) allows setting this without linker scripts.
+
+**Technical notes**:
+- Uses `getStreamer().emitValueToAlignment()` for padding
+- Supports both `.org` (LLVM standard) and `AORG` (xas99 dialect)
+- Expression evaluation handled by LLVM's expression parser
+
+---
+
+### 2026-01-04 DONE .include directive support in AsmParser
+
+**What**: Added `.include "filename"` directive to include external assembly files.
+
+**Where**: `llvm/lib/Target/TMS9900/AsmParser/TMS9900AsmParser.cpp` - `parseDirectiveInclude()`
+
+**Why**: Enables modular assembly code structure - wrapper files can include compiled C output.
+
+**Technical notes**:
+- Uses LLVM's SourceMgr infrastructure
+- Searches relative to current file's directory
+- Proper error handling for missing files
+
+---
+
+### 2026-01-04 DISCOVERY LLD relocation endianness bug for TMS9900
+
+**What**: Discovered LLD applies relocations in little-endian, but TMS9900 is big-endian. Object files are correct, but linked output has byte-swapped addresses.
+
+**Where**: LLD's ELF linker - no TMS9900-specific code exists. Affects all R_TMS9900_16 relocations.
+
+**Why**: LLD's generic relocation handling defaults to little-endian. Without target-specific code, symbol addresses are written with wrong byte order.
+
+**Technical notes**:
+- Object file (cart2.o) shows correct big-endian format: `00 10` followed by `cartridge_main` placeholder
+- Linked ELF shows byte-swapped result: addresses in little-endian
+- Currently using EM_NONE (0) as machine type - need EM_TMS9900
+- Fix requires: new `lld/ELF/Arch/TMS9900.cpp` with `relocate()` using big-endian writes
+- Similar to how MSP430 handles this (also 16-bit)
+
+---
+
+### 2026-01-04 PLANNING LLD big-endian relocation support TODO
+
+**What**: Created implementation plan for proper TMS9900 LLD support.
+
+**Where**: New files needed in `lld/ELF/Arch/` and modifications to `lld/ELF/Target.cpp`
+
+**Why**: Enable proper linking of TMS9900 object files with correct big-endian address encoding.
+
+**Tasks identified**:
+1. Add EM_TMS9900 to `llvm/include/llvm/BinaryFormat/ELF.h`
+2. Create `lld/ELF/Arch/TMS9900.cpp` with `relocate()` using `write16be()`
+3. Add `getTMS9900TargetInfo()` declaration to `lld/ELF/Target.h`
+4. Add EM_TMS9900 case to `lld/ELF/Target.cpp`
+5. Update `lld/ELF/Arch/CMakeLists.txt`
+6. Update `TMS9900ELFObjectWriter.cpp` to use `ELF::EM_TMS9900`
+
+---
+
 *Project Journal - Last Updated: January 4, 2026*

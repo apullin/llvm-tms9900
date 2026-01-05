@@ -107,17 +107,34 @@ Note: On TI-99/4A, 0x8300-0x83FF is the 256-byte "scratchpad RAM" which is faste
 
 ## Building
 
+**Using LLVM toolchain directly (recommended):**
+
+```bash
+# Compile C code to object file
+clang --target=tms9900 -c main.c -o main.o
+
+# Assemble startup code to object file
+clang --target=tms9900 -c startup.S -o startup.o
+
+# Link with LLD (once TMS9900 LLD support is complete)
+ld.lld -T ti99cart.ld startup.o main.o -o program.elf
+
+# Extract binary
+llvm-objcopy -O binary program.elf program.bin
+```
+
+**Using xas99 (legacy workflow):**
+
 ```bash
 # Assemble startup code
 xas99.py -R startup.asm -o startup.o
 
-# Compile C code with LLVM
-llc -march=tms9900 main.ll -o main.s
+# Compile C code with LLVM and convert to xas99 format
+clang --target=tms9900 -S main.c -o main.s
 python3 llvm2xas99.py main.s > main.asm
 xas99.py -R main.asm -o main.o
 
-# Link (using your linker of choice)
-# ...
+# Link with your linker of choice
 ```
 
 ## See Also

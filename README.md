@@ -93,8 +93,11 @@ The backend supports **direct machine code emission** - no external assembler re
 
 **Direct Object Workflow** (recommended):
 ```bash
-# Compile to ELF object file
+# Compile C to ELF object file
 clang --target=tms9900 -c program.c -o program.o
+
+# Assemble .S files directly (no external assembler needed!)
+clang --target=tms9900 -c startup.S -o startup.o
 
 # Extract raw binary for loading into TMS9900 memory
 llvm-objcopy -O binary program.o program.bin
@@ -142,9 +145,63 @@ The xas99 dialect:
 grep -v '^\s*\.' test.s > test_clean.s
 ```
 
-This is a known limitation that will be resolved when we implement a native TMS9900 assembler or direct object emission.
+This is a known limitation of LLVM's MC layer. For assembly output, use `grep -v` to filter, or use the direct object workflow which bypasses assembly text entirely.
 
 For more complex projects or if you need additional transformations, the `llvm2xas99.py` script provides more comprehensive conversion.
+
+### Assembly Input (AsmParser)
+
+The backend includes a full assembly parser, enabling direct assembly of `.S` files:
+
+```bash
+# Assemble TMS9900 assembly to object file
+clang --target=tms9900 -c program.S -o program.o
+```
+
+**Supported syntax styles:**
+
+| Feature | LLVM Style | xas99 Style |
+|---------|------------|-------------|
+| Labels | `LABEL:` | `LABEL` (no colon) |
+| Hex immediates | `0x1234` | `>1234` |
+| Comments | `#`, `//`, `;` | `;` |
+
+The AsmParser supports xas99-style syntax for **code and data** - the directives you'd use in subroutines and modules that get linked into a larger program. TI-99/4A-specific metadata (cartridge headers, menu entries, absolute placement) should be handled via startup code or external tools.
+
+**xas99 directives supported:**
+- `DATA >1234,>5678` - 16-bit word data
+- `BYTE >12,>34` - 8-bit byte data
+- `TEXT "string"` - ASCII text
+- `BSS 16` - Reserve zero-filled bytes
+- `DEF SYMBOL` - Export symbol (make global)
+- `REF SYMBOL` - Import external symbol
+- `EQU` - Symbol equate (e.g., `VDPWD EQU >8C00`)
+- `END` - End of source
+
+**Not supported** (use external tools or startup code):
+- `AORG` - Parsed but ignored; use objcopy/linker for address placement
+- `IDT`, `TITL`, `PAGE`, `LIST/UNL` - Listing directives
+- `COPY` - File includes
+- Cartridge headers and TI-99/4A menu metadata
+
+**Example (xas99 style):**
+```asm
+       DEF START
+       REF VDPWD
+
+START  LI R0,>8C00
+       LI R1,>0100
+LOOP   CLR R2
+       INC R1
+       B *R11
+
+MSG    TEXT "HELLO"
+       BYTE >00
+       BSS 8
+       END
+```
+
+Both LLVM and xas99 syntax styles can be mixed and produce identical object files. Symbols are case-insensitive (stored uppercase internally).
 
 ## Usage
 
