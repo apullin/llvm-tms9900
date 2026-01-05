@@ -771,4 +771,31 @@ The object file generation was verified by:
 
 ---
 
-*Project Journal - Last Updated: January 4, 2026*
+### 2026-01-05 DONE LLD linker support for TMS9900
+
+**What**: Implemented TMS9900 target support in LLD with proper big-endian relocations.
+
+**Where**:
+- `lld/ELF/Arch/TMS9900.cpp` (new file)
+- `lld/ELF/Target.h`, `lld/ELF/Target.cpp`, `lld/ELF/CMakeLists.txt`
+- `llvm/include/llvm/BinaryFormat/ELF.h` (added EM_TMS9900 = 0x99)
+- `llvm/lib/Target/TMS9900/MCTargetDesc/TMS9900ELFObjectWriter.cpp`
+
+**Why**: Complete the native LLVM toolchain - can now compile, assemble, and link TMS9900 programs without external tools.
+
+**Example workflow**:
+```bash
+clang --target=tms9900 -c startup.S -o startup.o
+clang --target=tms9900 -c main.c -o main.o
+ld.lld -T linker.ld startup.o main.o -o program.elf
+llvm-objcopy -O binary program.elf program.bin
+```
+
+**Technical notes**:
+- Machine type EM_TMS9900 = 0x99 (153) - fits nicely with TI processor family (near EM_TI_C6000 etc.)
+- Relocations use `write16be()` for proper big-endian address encoding
+- Supports R_TMS9900_16 and R_TMS9900_PCREL_8/16 relocation types
+
+---
+
+*Project Journal - Last Updated: January 5, 2026*

@@ -85,25 +85,25 @@ git clone git@github.com:apullin/llvm-tms9900-tools.git
 The backend supports **direct machine code emission** - no external assembler required:
 
 ```
-┌─────────┐    ┌─────────┐    ┌─────────────┐    ┌──────────────┐
-│  C code │───▶│  clang  │───▶│  ELF object │───▶│   objcopy    │───▶ Raw Binary
-│ (.c)    │    │  -c     │    │    (.o)     │    │  -O binary   │     for TMS9900
-└─────────┘    └─────────┘    └─────────────┘    └──────────────┘
+┌─────────┐    ┌─────────┐    ┌─────────────┐    ┌─────────┐    ┌──────────────┐
+│  C/.S   │───▶│  clang  │───▶│  ELF object │───▶│  ld.lld │───▶│   objcopy    │───▶ Binary
+│  code   │    │  -c     │    │    (.o)     │    │         │    │  -O binary   │
+└─────────┘    └─────────┘    └─────────────┘    └─────────┘    └──────────────┘
 ```
 
 **Direct Object Workflow** (recommended):
 ```bash
 # Compile C to ELF object file
-clang --target=tms9900 -c program.c -o program.o
+clang --target=tms9900 -c main.c -o main.o
 
 # Assemble .S files directly (no external assembler needed!)
 clang --target=tms9900 -c startup.S -o startup.o
 
-# Extract raw binary for loading into TMS9900 memory
-llvm-objcopy -O binary program.o program.bin
+# Link with LLD
+ld.lld -T linker.ld startup.o main.o -o program.elf
 
-# Or Intel HEX format
-llvm-objcopy -O ihex program.o program.hex
+# Extract raw binary for loading into TMS9900 memory
+llvm-objcopy -O binary program.elf program.bin
 ```
 
 **Legacy Assembly Workflow** (still supported):
