@@ -798,4 +798,24 @@ llvm-objcopy -O binary program.elf program.bin
 
 ---
 
+### 2026-01-05 FIX Format8 instruction encoding bug
+
+**What**: Fixed instruction encoding for Format8 instructions (LI, AI, ANDI, ORI, CI) and JMP fixup application.
+
+**Where**:
+- `TMS9900InstrFormats.td` - Format8/Format8_Cmp class definitions
+- `TMS9900InstrInfo.td` - Instruction definitions using Format8
+- `TMS9900AsmBackend.cpp` - applyFixup for pcrel_8
+
+**Why**: Instructions were encoding with wrong byte/bit positions:
+- LI R12,0 produced 0x200C instead of 0x02C0 (opcode and register swapped)
+- JMP loop produced 0xFF00 instead of 0x10FF (displacement in wrong byte)
+
+**Technical notes**:
+- Format8 register is in bits 7-4 (not 3-0), subop in bits 3-0
+- Changed Format8 parameter from 8-bit opcode to 4-bit subop
+- JMP fixup must write displacement to byte 1 (low byte in big-endian), not byte 0
+
+---
+
 *Project Journal - Last Updated: January 5, 2026*
