@@ -874,4 +874,21 @@ llvm-objcopy -O binary program.elf program.bin
 
 ---
 
+### 2026-01-06 FIX Stack spills now work (MOV_FI pseudo expansion)
+
+**What**: Fixed critical bug where register spills to the stack would crash with "Not supported instr: MCInst 275". Any C code with nested function calls or register pressure would fail.
+
+**Where**: `TMS9900MCInstLower.cpp` - added expansion of MOV_FI_Store and MOV_FI_Load pseudo instructions
+
+**Why**: The `MOV_FI_Store` and `MOV_FI_Load` pseudo instructions (used by `storeRegToStackSlot`/`loadRegFromStackSlot`) were being passed directly to MCCodeEmitter, which can't encode pseudos. They need to be expanded to real `MOVmx`/`MOVxm` instructions first.
+
+**Technical notes**:
+- `MOV_FI_Store`: (ins base, offset, rs) → `MOVmx`: (ins offset, ri, rs) - operand reordering required
+- `MOV_FI_Load`: (outs rd), (ins base, offset) → `MOVxm`: (outs rd), (ins offset, ri) - operand reordering required
+- MCInst 275 = MOV_FI_Store opcode number
+- Now cart_example with `vdp_write_at()` helper function compiles correctly
+- This was blocking any real C development - functions that call other functions need to save registers
+
+---
+
 *Project Journal - Last Updated: January 6, 2026*
