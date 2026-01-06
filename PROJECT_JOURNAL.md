@@ -857,4 +857,21 @@ llvm-objcopy -O binary program.elf program.bin
 
 ---
 
+### 2026-01-06 FIX Disassembler crash in printInstruction
+
+**What**: Fixed multiple crashes in the TMS9900 disassembler caused by incorrect operand counts for instructions with tied constraints.
+
+**Where**: `TMS9900Disassembler.cpp` - Format8, Format3, Format7, and Format1 auto-increment handling
+
+**Why**: Instructions with tied operands (e.g., `$rd = $rs` constraints) require the register to be added multiple times to the MCInst. The printer expects operands at specific indices based on the instruction definition.
+
+**Technical notes**:
+- **Format8 (AI/ANDI/ORI)**: Have `(outs $rd), (ins $rs, $imm)` with `$rd = $rs` - need 3 operands (reg, reg, imm), was only adding 2
+- **Format3 (INC/DEC/NEG/etc)**: Have `(outs $rd), (ins $rs)` with `$rd = $rs` - need 2 operands (reg, reg), was only adding 1
+- **Format3 opcode mapping**: Was completely wrong! INC/INCT/DEC/DECT opcodes were mixed up with ABS/SWPB/etc. Fixed to match TMS9900InstrInfo.td definitions
+- **Format7 (shifts)**: Have `(outs $rd), (ins $rs, $cnt)` with `$rd = $rs` - need 3 operands (reg, reg, imm), was only adding 2
+- **Format1 auto-increment**: MOVpim has `(outs $rd, $rs_wb), (ins $rs)` - need 3 operands, was only adding 2
+
+---
+
 *Project Journal - Last Updated: January 6, 2026*
