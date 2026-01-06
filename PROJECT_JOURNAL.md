@@ -891,4 +891,22 @@ llvm-objcopy -O binary program.elf program.bin
 
 ---
 
+### 2026-01-06 FIX Critical instruction encoding bug - second word not emitted
+
+**What**: Fixed critical bug where `Format1_SymLoad`, `Format1_SymStore`, `Format1_IdxLoad`, and `Format1_IdxStore` instruction classes weren't emitting the second instruction word (address/offset). All global variable accesses produced addresses of 0x0000.
+
+**Where**: `TMS9900InstrFormats.td` lines 300-436 - all four Format1_*Load and Format1_*Store classes with memory addressing
+
+**Why**: These instruction classes had `bits<16> Inst` but the instructions are 4 bytes (2 words). The address/offset operand was defined but never assigned to instruction bits. The second word was just zeros - no relocations were generated.
+
+**Technical notes**:
+- Changed `bits<16> Inst` to `bits<32> Inst` in all four classes
+- Added `let Inst{31-16} = addr;` (or `= offset;`) to emit the second word
+- `BL_sym` already had this correct: `bits<32> Inst` with `Inst{31-16} = target`
+- ball.c bouncing ball demo now has 36 relocations instead of 1
+- Global variables at addresses 0x2000+ now appear correctly in linked binary
+- MOVma/MOVam/MOVmx/MOVxm all affected (word + byte variants)
+
+---
+
 *Project Journal - Last Updated: January 6, 2026*
