@@ -840,4 +840,21 @@ llvm-objcopy -O binary program.elf program.bin
 
 ---
 
-*Project Journal - Last Updated: January 5, 2026*
+### 2026-01-06 FIX Critical Format8 encoding bug (LI/AI/ANDI/ORI/CI)
+
+**What**: Found and fixed critical bug where register and sub-opcode fields were swapped in Format8 instructions. `LI R10, 0x83FE` was generating `0x02A0` (which is `STWP R0`) instead of `0x020A`.
+
+**Where**: `TMS9900InstrFormats.td` lines 552-556 (Format8 class) and lines 573-576 (Format8_Cmp class)
+
+**Why**: This broke stack pointer initialization (`LI R10, 0x83FE`) and consequently all function calls. The TMS9900 Format VIII encoding is `0000 0010 ssss rrrr` where ssss=sub-opcode, rrrr=register. We had them swapped.
+
+**Technical notes**:
+- Before: `Inst{7-4} = rd; Inst{3-0} = subop;` → LI R10 = 0x02A0 (STWP R0!)
+- After: `Inst{7-4} = subop; Inst{3-0} = rd;` → LI R10 = 0x020A (correct)
+- Verified with tms9900-trace: function calls now work correctly at -O0
+- Audited ALL instruction formats against `tms9900_reference.txt` - no other encoding bugs found
+- Affected instructions: LI (subop=0), AI (subop=2), ANDI (subop=4), ORI (subop=6), CI (subop=8)
+
+---
+
+*Project Journal - Last Updated: January 6, 2026*
