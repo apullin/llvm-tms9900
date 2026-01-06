@@ -818,4 +818,26 @@ llvm-objcopy -O binary program.elf program.bin
 
 ---
 
+### 2026-01-05 DONE TMS9900 disassembler for llvm-objdump
+
+**What**: Implemented disassembler enabling `llvm-objdump -d` support for TMS9900 ELF files.
+
+**Where**:
+- `llvm/include/llvm/Object/ELFObjectFile.h` - Added EM_TMS9900 to ELF triple mapping
+- `llvm/lib/Target/TMS9900/Disassembler/TMS9900Disassembler.cpp` (new file)
+- `llvm/lib/Target/TMS9900/Disassembler/CMakeLists.txt` (new file)
+- `llvm/lib/Target/TMS9900/CMakeLists.txt` - Added Disassembler subdirectory
+
+**Why**: Complete the toolchain - allows inspecting compiled code, debugging, and round-trip verification (compile → disassemble → verify).
+
+**Technical notes**:
+- Instruction decoding by format: Format8 (LI/AI/ANDI/ORI/CI), Format9 (LWPI/LIMI), Format6 (jumps), Format7 (shifts), Format3 (single operand), Format1 (dual operand)
+- Key challenge: TableGen-generated instruction names have suffixes (e.g., `ABSr`, `MOVrr`, `SRAri`) not just base names
+- Special-cased BL @symbol - our encoding puts Ts=0 with target in second word, not standard Format3 addressing
+- MOVB partially supported (register-to-indirect mode); operand order may be swapped in print output
+- BLWP and X instructions not implemented in current TableGen, so not disassembled
+- Successfully decodes cart_example: LWPI, LI, BL, JMP, CLR, MOVB all working
+
+---
+
 *Project Journal - Last Updated: January 5, 2026*
