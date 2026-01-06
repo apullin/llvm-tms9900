@@ -909,4 +909,37 @@ llvm-objcopy -O binary program.elf program.bin
 
 ---
 
+### 2026-01-06 FIX Disassembler crashes on symbolic/indexed addressing modes
+
+**What**: Disassembler was crashing when encountering Format 1 instructions with symbolic or indexed addressing modes (Ts=2 or Td=2). Added proper handling for these cases.
+
+**Where**: `TMS9900Disassembler.cpp` lines 523-610 - added four new decoding paths
+
+**Why**: Format 1 instructions with memory addressing (MOV @addr,Rd, MOV Rs,@addr, MOV @offset(Rs),Rd, MOV Rs,@offset(Rd)) need to read the second word for address/offset and decode accordingly.
+
+**Technical notes**:
+- Symbolic source (Ts=2, S=0, Td=0): MOV @addr,Rd → MOVam
+- Symbolic dest (Td=2, D=0, Ts=0): MOV Rs,@addr → MOVma
+- Indexed source (Ts=2, S!=0, Td=0): MOV @offset(Rs),Rd → MOVxm
+- Indexed dest (Td=2, D!=0, Ts=0): MOV Rs,@offset(Rd) → MOVmx
+- Must distinguish symbolic (S=0/D=0) from indexed (S!=0/D!=0) addressing
+
+---
+
+### 2026-01-06 FIX Disassembler crashes on arithmetic instructions (tied operands)
+
+**What**: Disassembler crashed on A/S/SOC/SZC register-to-register instructions due to tied operand handling. These instructions have `$rd = $rs1` constraint requiring the destination register to appear twice in the MCInst.
+
+**Where**: `TMS9900Disassembler.cpp` lines 427-465 - register-to-register Format 1 decoding
+
+**Why**: Instructions like `A R2,R1` have pattern `(outs $rd), (ins $rs1, $rs2)` with `$rd = $rs1` tied constraint. MCInst needs 3 register operands but only 2 were being added. Compare instructions (C/CB) have no output and don't need tied handling.
+
+**Technical notes**:
+- Added `needsTiedOperand` flag for A/S/SOC/SZC (opcodes 0x4,0x6,0xA,0xE and byte variants)
+- Added `isCompare` flag for C/CB (opcodes 0x8,0x9) which have no output register
+- MOV doesn't need tied operand - it's a simple copy not read-modify-write
+- ball.elf and cart.elf now disassemble completely without crashes
+
+---
+
 *Project Journal - Last Updated: January 6, 2026*
