@@ -942,4 +942,24 @@ llvm-objcopy -O binary program.elf program.bin
 
 ---
 
+### 2026-01-06 DONE TMS9900 branch relaxation
+
+**What**: Implemented automatic branch relaxation for JMP instructions that exceed the 8-bit signed displacement range (~256 bytes). Out-of-range JMPs are converted to B @addr (4-byte absolute branch).
+
+**Where**:
+- `TMS9900InstrInfo.td` - added `B_sym` instruction and `brtarget16` operand type
+- `TMS9900MCCodeEmitter.cpp` - added `getBranchTarget16Encoding()` method
+- `TMS9900AsmBackend.cpp` - implemented `fixupNeedsRelaxation()`, `fixupNeedsRelaxationAdvanced()`, `relaxInstruction()`, and fixed `mayNeedRelaxation()` to only return true for JMP
+
+**Why**: ball2.c (bouncing ball demo with hit counters) was failing with "fixup value out of range" because the main() function exceeded the ~256 byte conditional branch limit. TMS9900 Format 6 jumps have 8-bit signed displacement.
+
+**Technical notes**:
+- `B @addr` encoding: opcode 0x0440 with Ts=10 (symbolic), S=0, followed by 16-bit address
+- `B_sym` is a 4-byte instruction (vs 2-byte JMP)
+- Only JMP can be relaxed; conditional branches (JEQ/JNE/JGT/JL/etc.) cannot be relaxed in LLVM's MC layer because it would require emitting multiple instructions (inverted branch + B @addr)
+- Code generator emits patterns like `JL skip; JMP target` so relaxing JMP handles most cases
+- Currently ALL JMPs are relaxed (fixupNeedsRelaxationAdvanced returns true for unresolved fixups) - could be optimized to only relax when actually out of range
+
+---
+
 *Project Journal - Last Updated: January 6, 2026*
