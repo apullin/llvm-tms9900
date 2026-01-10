@@ -17,8 +17,12 @@ llvm-tms9900-tools/
 ├── README.md                    # This file
 ├── PROJECT_JOURNAL.md           # Detailed implementation notes
 ├── llvm2xas99.py                # LLVM asm → xas99 format converter
+├── libtms9900/                  # Runtime libraries
+│   ├── builtins/                # Compiler intrinsics (32-bit ops, soft-float)
+│   ├── libm/                    # Math library (sinf, sqrtf, etc.)
+│   └── picolibc/                # Embedded C library source
 ├── runtime/
-│   └── tms9900_rt.asm           # 32-bit math runtime library
+│   └── tms9900_rt.asm           # Legacy 32-bit math (use libtms9900 instead)
 ├── startup/
 │   └── startup.asm              # Bare-metal startup template
 ├── tests/                       # LLVM IR test cases
@@ -271,10 +275,17 @@ The backend is **functional** and can compile real C programs.
 
 ### Not Yet Implemented
 
-- Floating point (would need software float library)
 - Debug info / DWARF
-- TMS9900 disassembler (for llvm-objdump)
 - Native linker support (use objcopy for single-file, or link externally)
+
+## libtms9900 - Runtime Libraries
+
+The `libtms9900/` directory provides runtime support libraries:
+
+- **Compiler builtins**: 32-bit integer ops (`__mulsi3`, `__divsi3`, shifts) and IEEE 754 soft-float (`__addsf3`, `__mulsf3`, etc.)
+- **libm**: Math library based on [picolibc](https://github.com/picolibc/picolibc), with size-optimized sin/cos (1.2KB vs 7KB+ standard)
+
+The library uses float32 only (no 64-bit double) to minimize code size. See `libtms9900/README.md` for build instructions, size tables, and implementation details.
 
 ## Testing
 
