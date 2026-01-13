@@ -962,4 +962,174 @@ llvm-objcopy -O binary program.elf program.bin
 
 ---
 
-*Project Journal - Last Updated: January 6, 2026*
+### 2026-01-09 DONE Add libtms9900 with picolibc - first libm implementation
+
+**What**: Created libtms9900/ runtime library providing compiler builtins and math functions. Includes custom compact sinf/cosf implementation (1.2KB vs 7KB+ standard picolibc).
+
+**Where**:
+- `libtms9900/builtins/` - 32-bit integer ops (mul32.asm, div32.asm, shift32.asm) and soft-float from compiler-rt
+- `libtms9900/libm/` - Math library with sincosf_tiny.c and picolibc sources
+- `libtms9900/picolibc/` - Upstream picolibc source (TODO: convert to submodule)
+
+**Why**: Needed soft-float and libm support for floating-point C code. Picolibc chosen over newlib for smaller size. Custom sin/cos written because standard picolibc's Payne-Hanek range reduction pulls in 8KB+ of code.
+
+**Technical notes**:
+- Float32 only - no 64-bit double support to minimize code size
+- Compact sinf/cosf uses Cody-Waite range reduction with extended-precision π/2 constants
+- Tradeoff: Full precision for |x| < 10^4, reduced precision (~4 digits) for |x| > 10^6
+- libm.a sizes: -O1=21,522B, -Os=20,980B, -O2=21,546B, -O3=25,816B (sqrtf explodes to 4.4KB at -O3)
+- powf is 5.1KB (24% of library) with 126 soft-float calls - TODO: optimize for small integer exponents
+- Documented full symbol table with sizes in libtms9900/README.md
+
+---
+
+### 2026-01-07 DONE Add BLWP/XOP/CRU instruction support
+
+**What**: Added TMS9900 system and I/O instructions: BLWP (branch and load workspace pointer), XOP (extended operation), and CRU bit I/O (LDCR, STCR, SBO, SBZ, TB).
+
+**Where**:
+- `TMS9900InstrFormats.td` - new Format9/Format12 instruction classes
+- `TMS9900InstrInfo.td` - instruction definitions
+- `TMS9900Disassembler.cpp` - decoding logic
+- `TMS9900AsmParser.cpp` - parsing support
+
+**Why**: These instructions are essential for TI-99/4A system programming - BLWP for context switches, XOP for system calls, CRU for peripheral I/O (keyboard, cassette, etc).
+
+---
+
+### 2026-01-07 DONE Add CKOF/CKON/LREX instruction support
+
+**What**: Added clock control and interrupt instructions: CKOF (clock off), CKON (clock on), LREX (load or restart execution).
+
+**Where**: `TMS9900InstrInfo.td`, `TMS9900Disassembler.cpp`
+
+**Why**: Complete the TMS9900 instruction set for system-level programming.
+
+---
+
+### 2026-01-08 FIX Compare/branch adjacency - CMPBR pseudo
+
+**What**: Introduced CMPBR pseudo-instruction to keep compare and branch adjacent. Select CMPBR when BR_CC is glued to CMP, expand post-RA to C/CI + Jcc.
+
+**Where**:
+- `TMS9900ISelDAGToDAG.cpp` - pattern matching for CMPBR selection
+- `TMS9900InstrInfo.cpp` - post-RA expansion
+- `TMS9900InstrInfo.td` - CMPBR pseudo definition
+
+**Why**: TMS9900 conditional branches test the status register set by the previous compare. If other flag-setting instructions interleave between compare and branch, the condition is corrupted.
+
+**Technical notes**:
+- CMPBR bundles compare opcode + condition + operands into single pseudo
+- Expanded after register allocation when no more instructions can be inserted
+- Handles both register and immediate comparisons
+
+---
+
+### 2026-01-08 FIX Model flags clobber for MOV memory ops
+
+**What**: Marked memory MOV/MOVB instructions as defining the status register (ST). Changed BRCOND lowering to go via CMP+BR_CC to preserve flag dependencies.
+
+**Where**: `TMS9900InstrInfo.td` (Defs = [ST] on MOV patterns), `TMS9900ISelLowering.cpp`
+
+**Why**: TMS9900's MOV instruction sets status flags (compare result with 0). If this isn't modeled, the scheduler might move a MOV between a compare and its branch, corrupting the condition.
+
+---
+
+### 2026-01-08 DONE Add NOP alias
+
+**What**: Added NOP as alias for JMP $+2 (jump to next instruction). Prevent relaxation of JMP with zero offset so inline asm NOP stays 2 bytes.
+
+**Where**: `TMS9900InstrInfo.td`, `TMS9900AsmBackend.cpp`
+
+**Why**: Convenience for assembly programmers and inline asm. TMS9900 has no hardware NOP - JMP $+2 is the standard idiom.
+
+---
+
+### 2026-01-08 FIX Tied frame index for i8 truncation
+
+**What**: Fixed register allocation crash when truncating i16 to i8 with frame index operands. Tied operand constraints weren't properly handled.
+
+**Where**: `TMS9900InstrInfo.td` - i8 store patterns with frame index
+
+**Why**: Code like `char x = (char)value; stack_var = x;` was crashing during register allocation.
+
+---
+
+### 2026-01-09 FIX Frame index scratch register clobbers
+
+**What**: Fixed bug where materializing frame index addresses would clobber live registers. Added proper scratch register handling in frame lowering.
+
+**Where**: `TMS9900RegisterInfo.cpp`, `TMS9900FrameLowering.cpp`
+
+**Why**: Functions with multiple stack variables were getting corrupted values because the frame index materialization code was reusing registers without checking liveness.
+
+---
+
+### 2026-01-09 FIX SETCC/branch lowering overhaul
+
+**What**: Major rework of comparison and branch lowering. Use -1 (all ones) for boolean true, custom SETCC for i16/i32, restrict indexed addressing base registers to avoid R0.
+
+**Where**:
+- `TMS9900ISelLowering.cpp` - custom SETCC lowering, boolean representation
+- `TMS9900InstrInfo.td` - IdxRegs register class excluding R0
+
+**Why**: Multiple issues: (1) compare+branch weren't staying adjacent, (2) i32 BR_CC wasn't lowering correctly, (3) R0 used as index register encodes as symbolic addressing (0 means "no register").
+
+**Technical notes**:
+- -1 booleans allow AND/OR to work correctly with condition results
+- i32 BR_CC now lowers via SETCC+BRCOND chain
+- Frame index pseudos also restricted to IdxRegs
+
+---
+
+### 2026-01-09 DONE LEAfi pseudo for frame address
+
+**What**: Added LEAfi pseudo-instruction to compute frame index addresses (base + offset) into a register.
+
+**Where**: `TMS9900InstrInfo.td`, `TMS9900ISelLowering.cpp`
+
+**Why**: Needed for passing addresses of stack variables to functions (e.g., `scanf(&x)`).
+
+---
+
+### 2026-01-10 FIX CMPBR in branch analysis
+
+**What**: Taught analyzeBranch/insertBranch/removeBranch to handle CMPBR pseudo instructions alongside regular branches.
+
+**Where**: `TMS9900InstrInfo.cpp` - branch analysis methods
+
+**Why**: The branch optimization passes need to understand CMPBR to correctly analyze control flow and avoid breaking the compare+branch bundles.
+
+---
+
+### 2026-01-10 FIX Avoid inverting non-invertible fallthrough
+
+**What**: Fixed incorrect control flow when a branch's fallthrough target couldn't be inverted. Was generating incorrect code for certain if/else patterns.
+
+**Where**: `TMS9900InstrInfo.cpp` - branch inversion logic
+
+**Why**: Some branch patterns have asymmetric invertibility - e.g., JL (jump if less) inverts to JGE, but complex compound conditions might not have a simple inverse.
+
+---
+
+### 2026-01-11 FIX SELECT16 compare+branch gluing
+
+**What**: Fixed select (ternary operator) lowering to properly glue compare and conditional move operations.
+
+**Where**: `TMS9900ISelLowering.cpp` - SELECT_CC lowering
+
+**Why**: Code like `x = (a < b) ? c : d` was generating incorrect results because the compare flags were being clobbered before the conditional move.
+
+---
+
+### 2026-01-12 FIX Skip call-frame pseudos when reserved
+
+**What**: Fixed crash when call-frame setup/destroy pseudos appeared with reserved call frame (no SP adjustment needed). Skip these pseudos during expansion.
+
+**Where**: `TMS9900FrameLowering.cpp`
+
+**Why**: Certain calling patterns with small/no stack frames were triggering assertion failures during pseudo expansion.
+
+---
+
+*Project Journal - Last Updated: January 12, 2026*
