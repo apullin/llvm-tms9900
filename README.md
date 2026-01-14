@@ -29,6 +29,9 @@ llvm-tms9900-tools/
 └── tms9900_reference.txt        # Quick instruction reference
 ```
 
+**TODO (repo layout):** consider making the `llvm-project` fork a submodule so
+the tool repo can track an exact backend revision.
+
 ## TMS9900 Architecture Summary
 
 The TMS9900 is a 16-bit microprocessor with unique characteristics:
