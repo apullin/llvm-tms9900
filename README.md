@@ -182,6 +182,20 @@ The AsmParser supports xas99-style syntax for **code and data** - the directives
 - `EQU` - Symbol equate (e.g., `VDPWD EQU >8C00`)
 - `END` - End of source
 
+**CRU single-bit addressing (SBO/SBZ/TB):**
+The CRU base lives in `R12`, and the instructions take a signed 8-bit bit
+offset relative to that base. It is common to name these offsets with `EQU`
+or labels. The assembler now accepts symbol operands and emits an 8-bit fixup
+so the linker can resolve them.
+
+```asm
+CRU_BASE EQU >1100
+CRU_LED  EQU 5
+
+       LI   R12,CRU_BASE
+       SBO  CRU_LED
+```
+
 **Not supported** (use external tools or startup code):
 - `AORG` - Parsed but ignored; use objcopy/linker for address placement
 - `IDT`, `TITL`, `PAGE`, `LIST/UNL` - Listing directives
