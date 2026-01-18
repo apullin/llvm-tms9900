@@ -5,15 +5,15 @@ microprocessor, the CPU used in the TI-99/4A home computer.
 
 ## Repository Structure
 
-This project spans two repositories:
+This project uses an LLVM fork as a submodule:
 
 **LLVM Fork** ([github.com/apullin/llvm-project](https://github.com/apullin/llvm-project), branch `tms9900`):
 - The TMS9900 backend inside LLVM 18
 - Clang driver support for `--target=tms9900`
 
-**Tools Repository** (this repo - [github.com/apullin/llvm-tms9900-tools](https://github.com/apullin/llvm-tms9900-tools)):
+**Tools Repository** (this repo - [github.com/apullin/llvm-tms9900](https://github.com/apullin/llvm-tms9900)):
 ```
-llvm-tms9900-tools/
+llvm-tms9900/
 ├── README.md                    # This file
 ├── PROJECT_JOURNAL.md           # Detailed implementation notes
 ├── llvm2xas99.py                # LLVM asm → xas99 format converter
@@ -29,8 +29,7 @@ llvm-tms9900-tools/
 └── tms9900_reference.txt        # Quick instruction reference
 ```
 
-**TODO (repo layout):** consider making the `llvm-project` fork a submodule so
-the tool repo can track an exact backend revision.
+The `llvm-project` directory is a git submodule pinned to the `tms9900` branch.
 
 ## TMS9900 Architecture Summary
 
@@ -65,13 +64,18 @@ The TMS9900 is a 16-bit microprocessor with unique characteristics:
 
 ## Building
 
-### 1. Clone and Build LLVM with TMS9900 Backend
+### 1. Clone and init submodules
 
 ```bash
-git clone git@github.com:apullin/llvm-project.git
-cd llvm-project
-git checkout tms9900
+git clone git@github.com:apullin/llvm-tms9900.git
+cd llvm-tms9900
+git submodule update --init --recursive
+```
 
+### 2. Build LLVM with TMS9900 Backend
+
+```bash
+cd llvm-project
 mkdir build && cd build
 cmake -G Ninja \
   -DLLVM_TARGETS_TO_BUILD="TMS9900" \
@@ -79,12 +83,6 @@ cmake -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
   ../llvm
 ninja clang llc
-```
-
-### 2. Clone Tools Repository
-
-```bash
-git clone git@github.com:apullin/llvm-tms9900-tools.git
 ```
 
 ## Toolchain Overview
