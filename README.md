@@ -85,6 +85,23 @@ cmake -G Ninja \
 ninja clang llc
 ```
 
+## Examples
+
+This repo ships a few small TI-99/4A cartridge examples under `cart_example/`:
+
+- `cart_example/banner.c`: text banner demo
+- `cart_example/ball.c`: simple bouncing ball
+- `cart_example/ball2.c`: bouncing ball with border hit effects
+
+Build ROM images and js99er cartridge copies:
+
+```bash
+cd cart_example
+make banner.bin banner.cart
+make ball.bin ball.cart
+make ball2.bin ball2.cart
+```
+
 ## Toolchain Overview
 
 The backend supports **direct machine code emission** - no external assembler required:
