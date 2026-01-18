@@ -1,6 +1,3 @@
-# LLVM project is in separate repo
-llvm-project/
-
 # Build artifacts
 *.o
 *.bin
