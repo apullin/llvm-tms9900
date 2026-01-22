@@ -92,6 +92,7 @@ This repo ships a few small TI-99/4A cartridge examples under `cart_example/`:
 - `cart_example/banner.c`: text banner demo
 - `cart_example/ball.c`: simple bouncing ball
 - `cart_example/ball2.c`: bouncing ball with border hit effects
+- `cart_example/life.c`: Game of Life (Graphics II, per-pixel)
 
 Build ROM images and js99er cartridge copies:
 
@@ -100,6 +101,7 @@ cd cart_example
 make banner.bin banner.cart
 make ball.bin ball.cart
 make ball2.bin ball2.cart
+make life.bin life.cart
 ```
 
 ## Toolchain Overview

@@ -14,7 +14,7 @@ READELF = $(LLVM_BUILD)/llvm-readelf
 CFLAGS = --target=tms9900 -O2 -fno-builtin -ffreestanding -Wno-main-return-type
 LDFLAGS = -T cart.ld --print-memory-usage
 
-PROGRAMS = banner ball ball2
+PROGRAMS = banner ball ball2 life
 
 .PHONY: all clean
 
@@ -49,6 +49,9 @@ ball.elf: crt0.o ball.o cart.ld
 
 ball2.elf: crt0.o ball2.o cart.ld
 	$(LD) $(LDFLAGS) crt0.o ball2.o -o $@
+
+life.elf: crt0.o life.o cart.ld
+	$(LD) $(LDFLAGS) crt0.o life.o -o $@
 
 dump-%: %.elf
 	@echo "=== Sections ==="

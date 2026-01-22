@@ -1132,4 +1132,129 @@ llvm-objcopy -O binary program.elf program.bin
 
 ---
 
-*Project Journal - Last Updated: January 12, 2026*
+### 2026-01-13 REFACTOR Switch disassembler to TableGen tables
+
+**What**: Major refactor of disassembler from hand-written decoding to TableGen-generated tables. Deleted ~974 lines of manual decoder code.
+
+**Where**:
+- `TMS9900Disassembler.cpp` - now uses generated tables with custom decoders for branches/CRU/shifts
+- `TMS9900InstrInfo.td` - added DecoderMethod annotations
+- `CMakeLists.txt` - enabled gen-disassembler
+
+**Why**: Hand-written decoder was error-prone and hard to maintain. TableGen tables are auto-generated from instruction definitions, ensuring consistency.
+
+**Technical notes**:
+- Custom decoders still needed for: branch targets (PC-relative), CRU bit offsets, R0-count shifts
+- R0-count shifts hidden from asm/disasm (use SLA R1,0 not SLA R1,R0)
+
+---
+
+### 2026-01-13 DONE Disassembler coverage expansion
+
+**What**: Added disassembly support for format1/format2 memory ops, format3 (memory operands), byte ops (MOVB, AB, etc.), COC/CZC, and 48-bit format1 mem-to-mem instructions.
+
+**Where**: `TMS9900Disassembler.cpp`, `TMS9900InstrInfo.td`
+
+**Why**: Complete disassembler coverage for all TMS9900 instruction formats.
+
+---
+
+### 2026-01-14 DONE Long-range signed branch expansion
+
+**What**: New TMS9900LongBranch pass expands conditional branches that exceed the signed 8-bit displacement range. Converts `JLT target` (out of range) to `JGE skip; B @target; skip:`.
+
+**Where**:
+- `TMS9900LongBranch.cpp` - new MachineFunctionPass
+- `TMS9900TargetMachine.cpp` - pass registration
+
+**Why**: TMS9900 conditional branches (JEQ/JNE/JGT/JLT/etc.) have only 8-bit signed displacement (~256 bytes). Large functions need branch expansion.
+
+**Technical notes**:
+- Different from MC-layer relaxation which only handles JMP
+- Conditional branches require two-instruction sequence (inverted condition + absolute branch)
+- Pass runs late, after branch folding
+
+---
+
+### 2026-01-14 DONE Peephole optimizer
+
+**What**: New TMS9900Peephole pass for target-specific optimizations:
+- Fold `MOV @x,Ry; INC Ry` into `MOV *Rx+,Ry` (auto-increment)
+- Optimize `AI Rx,0` (remove), `AI Rx,1` → `INC`, `AI Rx,2` → `INCT`
+- Optimize `LI Rx,0` → `CLR Rx`, `LI Rx,-1` → `SETO Rx`
+- Fold `LI Rx,val; XOR Rx,Ry` into `XOR @lit,Ry`
+
+**Where**:
+- `TMS9900Peephole.cpp` - new MachineFunctionPass
+- Added `-tms9900-disable-peephole` flag for debugging
+
+**Why**: These patterns are common in compiled code but LLVM's generic optimizers don't know about TMS9900-specific instructions like INC/INCT/CLR/SETO.
+
+---
+
+### 2026-01-14 DONE CRU symbol fixups
+
+**What**: Added 8-bit fixup support for CRU single-bit instructions (SBO, SBZ, TB). Allows symbolic bit offsets that the linker resolves.
+
+**Where**: `TMS9900AsmBackend.cpp`, `TMS9900MCCodeEmitter.cpp`, `TMS9900AsmParser.cpp`
+
+**Why**: CRU programming often uses named bit offsets (e.g., `CRU_LED EQU 5; SBO CRU_LED`). Previously only immediate values worked.
+
+---
+
+### 2026-01-14 DONE Inline constant i32 shifts
+
+**What**: Generate inline code for 32-bit shifts by constant amounts instead of always calling runtime library.
+
+**Where**: `TMS9900ISelLowering.cpp`
+
+**Why**: `x << 1` was calling `__ashlsi3` even though inline code is smaller and faster for small constants.
+
+**Technical notes**:
+- Shift by 16 uses word swap
+- Small shifts (1-3) expand to repeated operations
+- Large/variable shifts still use libcall
+
+---
+
+### 2026-01-14 FIX Avoid relaxing unresolved JMPs
+
+**What**: Fixed MC-layer branch relaxation to not relax JMPs with unresolved symbols (external references).
+
+**Where**: `TMS9900AsmBackend.cpp`
+
+**Why**: Was incorrectly relaxing all JMPs including those to external symbols, causing link errors.
+
+---
+
+### 2026-01-15 DONE Scheduling model tags
+
+**What**: Added basic scheduling model annotations (instruction latencies) to TMS9900 instruction definitions.
+
+**Where**: `TMS9900InstrInfo.td`, `TMS9900Schedule.td`
+
+**Why**: Enables LLVM's scheduler to make better decisions about instruction ordering. Foundation for future cycle-count optimization.
+
+---
+
+### 2026-01-17 FIX SELECT16 SSA and CMPBR scheduling
+
+**What**: Fixed issues with SELECT16 pseudo-instruction: wasn't preserving SSA form correctly, and CMPBR pseudos weren't being scheduled properly with their compare inputs.
+
+**Where**: `TMS9900ISelLowering.cpp`, `TMS9900InstrInfo.cpp`
+
+**Why**: Ternary operator code (`a ? b : c`) was generating incorrect results in some cases.
+
+---
+
+### 2026-01-17 CLEANUP Warnings and test cleanup
+
+**What**: Fixed compiler warnings, cleaned up test cases for conditional branch relaxation.
+
+**Where**: Various files
+
+**Why**: Code hygiene.
+
+---
+
+*Project Journal - Last Updated: January 17, 2026*
