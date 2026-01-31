@@ -64,9 +64,8 @@ volatile unsigned int usCriticalNesting = portINITIAL_CRITICAL_NESTING;
  *                  [PC]          = pxCode (task entry point)
  *                  [ST]          = 0x0002 (interrupts enabled)
  *                  [critNesting] = 0
- *                  [R0]          ← workspace starts here
- *                  [R1]          = pvParameters
- *                  [R2] ... [R9] = 0
+ *                  [R0]          = pvParameters (first C argument)
+ *                  [R1] ... [R9] = 0
  *                  [R10]         = (don't care, set by restore)
  *                  [R11] ... [R15] = 0
  *
@@ -91,8 +90,8 @@ StackType_t * pxPortInitialiseStack( StackType_t * pxTopOfStack,
         pxWorkspace[ i ] = 0;
     }
 
-    /* R1 = first argument to task function */
-    pxWorkspace[ 1 ] = ( StackType_t )( unsigned int ) pvParameters;
+    /* R0 = first argument to task function (TMS9900 C calling convention) */
+    pxWorkspace[ 0 ] = ( StackType_t )( unsigned int ) pvParameters;
 
     /* Data stack starts just below workspace, grows downward */
     pxSP = pxWorkspace;
