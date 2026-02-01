@@ -34,7 +34,7 @@ remainderf(float x, float p)
     if (FLT_UWORD_IS_NAN(hx) || FLT_UWORD_IS_NAN(hp))
         return x + p;
 
-    if (isinf(x) || hp == 0)
+    if (__isinff(x) || hp == 0)
         return __math_invalidf(x);
 
     if (hp <= FLT_UWORD_HALF_MAX)

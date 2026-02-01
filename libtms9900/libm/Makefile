@@ -9,6 +9,7 @@ CFLAGS = --target=tms9900 -Os -ffreestanding -fno-builtin \
          -I ../picolibc/libc/include \
          -I ../picolibc/libm/common \
          -I include \
+         -include include/picolibc.h \
          -D_COMPILING_NEWLIB
 
 PICO_MATH = ../picolibc/libm/math
@@ -27,11 +28,12 @@ PICO_MATH_SRCS = \
     sf_atan.c sf_atan2.c sf_asin.c sf_acos.c \
     sf_sinh.c sf_cosh.c sf_tanh.c \
     sf_asinh.c sf_acosh.c sf_atanh.c \
-    sf_hypot.c
+    sf_hypot.c \
+    sf_tan.c sf_rem_pio2.c kf_rem_pio2.c kf_tan.c
 
 # Picolibc common functions
 PICO_COMMON_SRCS = \
-    sf_scalbn.c sf_copysign.c sf_finite.c sf_isnan.c sf_modf.c
+    sf_scalbn.c sf_copysign.c sf_finite.c sf_isnan.c sf_isinf.c sf_issignaling.c sf_modf.c
 
 OUR_OBJS = $(OUR_SRCS:%.c=$(BUILD)/%.o)
 PICO_MATH_OBJS = $(PICO_MATH_SRCS:%.c=$(BUILD)/%.o)
@@ -97,6 +99,14 @@ $(BUILD)/sf_atanh.o: $(PICO_MATH)/sf_atanh.c | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 $(BUILD)/sf_hypot.o: $(PICO_MATH)/sf_hypot.c | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
+$(BUILD)/sf_tan.o: $(PICO_MATH)/sf_tan.c | $(BUILD)
+	$(CC) $(CFLAGS) -c $< -o $@
+$(BUILD)/sf_rem_pio2.o: $(PICO_MATH)/sf_rem_pio2.c | $(BUILD)
+	$(CC) $(CFLAGS) -c $< -o $@
+$(BUILD)/kf_rem_pio2.o: $(PICO_MATH)/kf_rem_pio2.c | $(BUILD)
+	$(CC) $(CFLAGS) -c $< -o $@
+$(BUILD)/kf_tan.o: $(PICO_MATH)/kf_tan.c | $(BUILD)
+	$(CC) $(CFLAGS) -c $< -o $@
 
 # Picolibc common functions
 $(BUILD)/sf_scalbn.o: $(PICO_COMMON)/sf_scalbn.c | $(BUILD)
@@ -106,6 +116,10 @@ $(BUILD)/sf_copysign.o: $(PICO_COMMON)/sf_copysign.c | $(BUILD)
 $(BUILD)/sf_finite.o: $(PICO_COMMON)/sf_finite.c | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 $(BUILD)/sf_isnan.o: $(PICO_COMMON)/sf_isnan.c | $(BUILD)
+	$(CC) $(CFLAGS) -c $< -o $@
+$(BUILD)/sf_isinf.o: $(PICO_COMMON)/sf_isinf.c | $(BUILD)
+	$(CC) $(CFLAGS) -c $< -o $@
+$(BUILD)/sf_issignaling.o: $(PICO_COMMON)/sf_issignaling.c | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 $(BUILD)/sf_modf.o: $(PICO_COMMON)/sf_modf.c | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@

@@ -39,10 +39,10 @@ fmodf(float x, float y)
     hy &= 0x7fffffff;     /* |y| */
 
     /* purge off exception values */
-    if (isnan(x) || isnan(y)) /* x or y nan, return nan */
+    if (__isnanf(x) || __isnanf(y)) /* x or y nan, return nan */
         return x + y;
 
-    if (isinf(x)) /* x == inf, domain error */
+    if (__isinff(x)) /* x == inf, domain error */
         return __math_invalidf(x);
 
     if (hy == 0) /* y=0, domain error */

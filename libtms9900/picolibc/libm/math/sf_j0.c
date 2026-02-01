@@ -37,10 +37,10 @@ j0f(float x)
     float     z, s, c, ss, cc, r, u, v;
     __int32_t hx, ix;
 
-    if (isnan(x))
+    if (__isnanf(x))
         return x + x;
 
-    if (isinf(x))
+    if (__isinff(x))
         return zero;
 
     GET_FLOAT_WORD(hx, x);

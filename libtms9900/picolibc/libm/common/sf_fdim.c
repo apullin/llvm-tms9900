@@ -9,11 +9,11 @@
 float
 fdimf(float x, float y)
 {
-    if (isnanf(x) || isnanf(y))
+    if (__isnanf(x) || __isnanf(y))
         return (x + y);
 
     float z = x > y ? x - y : 0.0f;
-    if (!isinf(x) && !isinf(y))
+    if (!__isinff(x) && !__isinff(y))
         z = check_oflowf(z);
     return z;
 }

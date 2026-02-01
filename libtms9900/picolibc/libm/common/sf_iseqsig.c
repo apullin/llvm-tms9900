@@ -40,9 +40,9 @@
 int
 __iseqsigf(float x, float y)
 {
-    if (isnan(x))
+    if (__isnanf(x))
         return __math_invalidf(x);
-    if (isnan(y))
+    if (__isnanf(y))
         return __math_invalidf(y);
     return x == y;
 }

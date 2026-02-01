@@ -27,7 +27,7 @@ sqrtf(float x)
 
     /* take care of Inf and NaN */
     if (!FLT_UWORD_IS_FINITE(hx)) {
-        if (ix < 0 && !isnanf(x))
+        if (ix < 0 && !__isnanf(x))
             return __math_invalidf(x); /* sqrt(-inf)=sNaN */
         return x + x;                  /* sqrt(NaN)=NaN, sqrt(+inf)=+inf */
     }

@@ -15,7 +15,7 @@
 float
 nearbyintf(float x)
 {
-    if (isnan(x))
+    if (__isnanf(x))
         return x + x;
 #if defined(FE_INEXACT) && !defined(__DOUBLE_NOEXCEPT)
     fenv_t env;

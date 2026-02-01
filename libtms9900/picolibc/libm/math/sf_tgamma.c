@@ -34,7 +34,7 @@ tgammaf(float x)
     float y = expf(__math_lgammaf_r(x, &signgam_local, &divzero));
     if (signgam_local < 0)
         y = -y;
-    if (isinff(y) && finitef(x) && !divzero)
+    if (__isinff(y) && finitef(x) && !divzero)
         return __math_oflowf(signgam_local < 0);
     return y;
 }
