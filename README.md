@@ -93,15 +93,16 @@ This repo ships a few small TI-99/4A cartridge examples under `cart_example/`:
 - `cart_example/ball.c`: simple bouncing ball
 - `cart_example/ball2.c`: bouncing ball with border hit effects
 - `cart_example/life.c`: Game of Life (Graphics II, per-pixel)
+- `cart_example/life2x.c`: Game of Life (2x pixels, keyboard controls, dirty-tile tracing)
+- `cart_example/kb_test.c`: keyboard scan test (KSCAN)
+- `cart_example/irq_test.c`: VDP interrupt counter test
 
-Build ROM images and js99er cartridge copies:
+Build ROM images and js99er cartridge copies (plus MAME `.rpk` and EA5 `.img`):
 
 ```bash
 cd cart_example
-make banner.bin banner.cart
-make ball.bin ball.cart
-make ball2.bin ball2.cart
-make life.bin life.cart
+make banner.bin banner.cart banner.rpk
+make life2x.img
 ```
 
 ## Toolchain Overview

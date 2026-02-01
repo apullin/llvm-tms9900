@@ -1257,4 +1257,28 @@ llvm-objcopy -O binary program.elf program.bin
 
 ---
 
-*Project Journal - Last Updated: January 17, 2026*
+### 2026-02-01 DONE DWARF debug info support
+
+**What**: Enabled DWARF5 debug information emission for the TMS9900 backend. The compiler now produces valid `.debug_info`, `.debug_line`, `.debug_frame`, `.debug_addr`, and `.debug_str` sections when compiling with `-g`.
+
+**Where**:
+- `MCTargetDesc/TMS9900MCTargetDesc.cpp`: Set `SupportsDebugInformation = true`, `UsesCFIWithoutEH = true`, `DwarfRegNumForCFI = true`. Added initial CFA frame state (`DW_CFA_def_cfa R10, 0`) in `createTMS9900MCAsmInfo()`. Changed `shouldOmitSectionDirective()` to defer to base class so debug sections get proper directives.
+- `TMS9900FrameLowering.cpp`: Added CFI directives in `emitPrologue()` and `emitEpilogue()` — `cfiDefCfaOffset` after stack adjustments, `createOffset` for R11 (return address) save.
+- `llvm/include/llvm/BinaryFormat/ELFRelocs/TMS9900.def`: New file defining R_TMS9900_NONE/16/PCREL_8/PCREL_16/8 relocation types (previously only in a local enum in the ELF object writer).
+- `llvm/include/llvm/BinaryFormat/ELF.h`: Added `#include "ELFRelocs/TMS9900.def"` enum block.
+- `llvm/lib/Object/ELF.cpp`: Added EM_TMS9900 case for relocation name printing.
+- `llvm/lib/Object/RelocationResolver.cpp`: Added `supportsTMS9900()`/`resolveTMS9900()` and switch case, so `llvm-dwarfdump` can resolve relocations in `.o` files.
+- `TMS9900ELFObjectWriter.cpp`: Removed local relocation enum, now uses `ELF::R_TMS9900_*` from shared header.
+
+**Why**: Enables source-level debugging with GDB. The DWARF info maps addresses to source lines, names functions/variables, and provides frame unwinding data for backtraces.
+
+**Technical notes**:
+- DWARF register numbering was already correct in `TMS9900RegisterInfo.td` (R0-R15 = 0-15, PC=16, WP=17, ST=18).
+- The key missing piece was the initial CFA rule in the CIE — without `DW_CFA_def_cfa R10, 0`, all `cfiDefCfaOffset` instructions in FDEs failed with "CFA rule was not RegPlusOffset".
+- `int` is correctly reported as `DW_ATE_signed` with `byte_size = 0x02` (16-bit).
+- The relocation resolver was critical for `llvm-dwarfdump` to work on `.o` files — without it, all string references showed as `()`.
+- This serves as a prototype for adding DWARF to other vintage CPU backends (i8085, i8086, etc.).
+
+---
+
+*Project Journal - Last Updated: February 1, 2026*
