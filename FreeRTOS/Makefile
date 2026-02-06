@@ -18,7 +18,7 @@ CFLAGS    := $(TARGET) -Os -ffreestanding -nostdlibinc -fno-builtin \
              -isystem include \
              -I . \
              -I FreeRTOS-Kernel/include \
-             -I portable/GCC/TMS9900
+             -I FreeRTOS-Kernel/portable/GCC/TMS9900
 ASFLAGS   := $(TARGET) -c
 LDFLAGS   := -T linker.ld
 
@@ -36,8 +36,8 @@ KERNEL_EXT_SRC := \
 
 # Port sources
 PORT_SRC := \
-    portable/GCC/TMS9900/port.c \
-    portable/GCC/TMS9900/portasm.S
+    FreeRTOS-Kernel/portable/GCC/TMS9900/port.c \
+    FreeRTOS-Kernel/portable/GCC/TMS9900/portasm.S
 
 # Shared support sources
 SUPPORT_SRC := \
