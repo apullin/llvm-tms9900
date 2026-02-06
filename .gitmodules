@@ -2,3 +2,7 @@
 	path = llvm-project
 	url = git@github.com:apullin/llvm-project.git
 	branch = tms9900
+[submodule "FreeRTOS/FreeRTOS-Kernel"]
+	path = FreeRTOS/FreeRTOS-Kernel
+	url = git@github.com:apullin/FreeRTOS-Kernel.git
+	branch = tms9900

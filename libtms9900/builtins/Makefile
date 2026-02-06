@@ -12,7 +12,7 @@ AR = ../../llvm-project/build/bin/llvm-ar
 ASFLAGS = --target=tms9900 -c
 
 # Source files
-SRCS = mul32.S div32.S shift32.S
+SRCS = mul32.S div32.S shift32.S memcpy.S memset.S memmove.S
 
 # Object files
 OBJS = $(SRCS:.S=.o)

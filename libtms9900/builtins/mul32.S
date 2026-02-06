@@ -36,8 +36,11 @@ __mulsi3:
        MOV  R1,R6             ; R6 = Al (we'll clobber R1)
 
 ; Step 1: Al * Bl -> full 32-bit result in R4:R5
-       MOV  R6,R4             ; R4 = Al
-       MPY  R3,R4             ; R4:R5 = Al * Bl
+; (Uses R0 as MPY destination since we need R0:R1 result anyway)
+       MOV  R6,R0             ; R0 = Al
+       MPY  R3,R0             ; R0:R1 = Al * Bl
+       MOV  R0,R4             ; R4 = high(Al * Bl)
+       MOV  R1,R5             ; R5 = low(Al * Bl)
 
 ; Step 2: Ah * Bl -> add low word to R4
        MOV  R9,R0             ; R0 = Ah
