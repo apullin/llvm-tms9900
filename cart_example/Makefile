@@ -20,7 +20,7 @@ EA5_LDFLAGS = -T ea5.ld --print-memory-usage
 EA5_BASE = 0xA000
 EA5_MAX_SIZE = 0x6000
 
-PROGRAMS = banner ball ball2 life life2x kb_test irq_test
+PROGRAMS = banner ball ball2 life life2 life2x kb_test irq_test
 EA5_PROGRAMS = $(PROGRAMS)
 
 .PHONY: all clean
@@ -88,6 +88,14 @@ life.elf: crt0.o life.o cart.ld
 
 life.ea5.elf: crt0.o life.o ea5.ld
 	$(LD) $(EA5_LDFLAGS) crt0.o life.o -o $@
+	$(OBJDUMP) -d $@ > $(@:.elf=.list)
+
+life2.elf: crt0.o life2.o cart.ld
+	$(LD) $(LDFLAGS) crt0.o life2.o -o $@
+	$(OBJDUMP) -d $@ > $(@:.elf=.list)
+
+life2.ea5.elf: crt0.o life2.o ea5.ld
+	$(LD) $(EA5_LDFLAGS) crt0.o life2.o -o $@
 	$(OBJDUMP) -d $@ > $(@:.elf=.list)
 
 life2x.elf: crt0.o life2x.o kbd.o cart.ld
