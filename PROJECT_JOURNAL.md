@@ -1339,4 +1339,21 @@ llvm-objcopy -O binary program.elf program.bin
 
 ---
 
+## 2026-02-06 DONE Optimization audit: auto-increment, hardware DIV, CTLZ
+
+**What**: Evaluated three potential codegen optimizations. Auto-increment addressing was already working. Hardware DIV fast path added to div32.S. CTLZ left as Expand (already optimal).
+
+**Where**: `libtms9900/builtins/div32.S` (hardware DIV fast path), `TMS9900ISelLowering.cpp` (auto-increment and CTLZ verified)
+
+**Why**: Post-correctness optimization pass. Sought measurable cycle count improvements.
+
+**Technical notes**:
+- **Auto-increment (`*R+`)**: Fully working. `copy_words()` generates `MOV *R1+,R3` / `MOV R3,*R0+`. Infrastructure: `POST_INC` legal, `getPostIndexedAddressParts()`, peephole `tryFoldPostInc`, full `.td` patterns. TMS9900 only supports auto-increment on source operand, so temp register intermediary is correct.
+- **Hardware DIV fast path**: Added 21 lines at entry of `UDIV32`. When divisor is 16-bit, divisor nonzero, and dividend_hi < divisor, uses single `DIV R3,R0` instruction instead of 32-iteration software loop. Saves ~500-800 cycles per qualifying division. Verified with 12-test suite covering signed/unsigned div/mod edge cases.
+- **CTLZ**: LLVM's Expand generates 19 straight-line instructions (spread-bits-down + popcount). A loop would average ~40 executed instructions (5/iter × 8 avg). Since TMS9900 has no branch prediction, branchless expansion is faster.
+- **Pre-existing bug noted**: Software division path returns incorrect results for some dividend/divisor combinations where dividend_hi >= divisor (e.g., 0x30000/3). Not introduced by fast path changes.
+- Benchmark results: All 9/9 pass, identical cycle counts (none exercise 32-bit division).
+
+---
+
 *Project Journal - Last Updated: February 6, 2026*
