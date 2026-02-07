@@ -42,12 +42,14 @@ ALL_BENCHMARKS = [
     "string_torture",
     "float_torture",
     "bitops_torture",
+    "vertex3d",
 ]
 
 # Benchmarks that halt via IDLE on success
 IDLE_HALT = {
     "bubble_sort", "deep_recursion", "crc32", "q7_8_matmul",
     "json_parse", "string_torture", "float_torture", "bitops_torture",
+    "vertex3d",
 }
 
 LOAD_ADDR = 0x0000
