@@ -145,6 +145,27 @@ MOD_D3:
 ;       quotient |= 1  (set LSB)
 ;----------------------------------------------------------------------
 UDIV32:
+; Fast path: if divisor fits in 16 bits, try hardware DIV
+; DIV src,Rd does: Rd:Rd+1 / src -> Rd=quot, Rd+1=rem
+; Precondition: Rd < src (otherwise division overflow)
+       MOV  R2,R2             ; test divisor high word
+       JNE  UDIV32_SW         ; nonzero -> must use software path
+       MOV  R3,R3             ; test divisor low word (avoid div by zero)
+       JEQ  UDIV32_SW         ; zero -> skip (div by zero handled by software path)
+; Divisor is 16-bit (in R3). Check if dividend high word < divisor
+; to avoid hardware DIV overflow
+       C    R0,R3
+       JLE  UDIV32_SW         ; R0 >= R3 -> would overflow hardware DIV
+; Hardware DIV: R0:R1 / R3 -> R0=quotient, R1=remainder
+       DIV  R3,R0
+; Pack results: quotient in R4:R5, remainder in R6:R7
+       CLR  R4                ; quotient high = 0 (fits in 16 bits)
+       MOV  R0,R5             ; quotient low
+       CLR  R6                ; remainder high = 0 (remainder < 16-bit divisor)
+       MOV  R1,R7             ; remainder low
+       B    *R11              ; return (no stack frame was created)
+
+UDIV32_SW:
        DECT R10
        MOV  R11,*R10
        DECT R10
