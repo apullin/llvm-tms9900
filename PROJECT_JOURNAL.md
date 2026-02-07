@@ -1356,4 +1356,164 @@ llvm-objcopy -O binary program.elf program.bin
 
 ---
 
-*Project Journal - Last Updated: February 6, 2026*
+## 2026-02-07 DONE life3: Assembly-optimized Game of Life inner loop
+
+**What**: Created life3 variant with hand-coded TMS9900 assembly for the CSA inner loop. C wrapper (`life3.c`) delegates per-row processing to `life_compute_row()` in `life3_step.S`. Result: 2,572,436 cycles/step — 8.1% faster than life2_2x (2,800,354) and 33.6% faster than original life2x (3,876,196).
+
+**Where**: `cart_example/life3.c` (C wrapper, `life_next_word` replaced with extern call), `cart_example/life3_step.S` (hand-coded assembly), `cart_example/Makefile` (added life3 build targets)
+
+**Why**: Compiler-generated code had 8 stack spills per word in the inner loop (224 cycles overhead). Hand-coded assembly reduces this to 1 spill (mC, 56 cycles) by using all 10 available computation registers (R4-R9, R12-R15) and keeping row pointers (R0-R2) in registers throughout.
+
+**Technical notes**:
+- CSA tree factored into `.Lcsa_life` subroutine called via BL from word 0, loop body (words 1-6), and word 7. Saves ~200 bytes of code duplication at ~54 cycles/call overhead.
+- Register allocation: R0-R2 = row pointers, R3 = loop counter/row_dst on stack, R4-R9/R12-R15 = CSA computation. Only mC needs a push/pop per word.
+- Full adder pattern: `XOR+XOR` for sum, `INV+SZC+INV+SZC+SOC` for carry (majority function via AND-NOT).
+- Life rule uses 5 instructions: `SOC` (OR mC into bit0), two `SZC` (AND-NOT for ~bit2/~bit3), `INV+SZC` (AND with bit0|mC).
+- Words 1-6 use auto-increment addressing (`*R4+`) for loading 3 consecutive words per row, saving address computation.
+- ROM: 6472B (79.00%) vs life2_2x 6048B (73.83%) — 424B larger due to expanded assembly.
+
+---
+
+## 2026-02-07 FIX R0 indexed addressing bug in life3_step.S
+
+**What**: Fixed critical bug where `@offset(R0)` instructions in word 0 and word 7 code assembled as absolute/symbolic addressing instead of indexed, causing garbage neighbor data and cells accumulating in a column on the right side of the screen.
+
+**Where**: `cart_example/life3_step.S` — all `@offset(R0)` instructions in word 0 (lines 44-46) and word 7 (lines 194-196) sections.
+
+**Why**: TMS9900 cannot use R0 as an index register. When encoding indexed mode with R0 (Ts=10, S=0000), the CPU interprets it as symbolic (absolute) addressing. So `MOV @14(R0), R5` assembled as `MOV @0x000E, R5` — reading from absolute address 0x000E (cart header memory) instead of `row_prev + 14`.
+
+**Technical notes**:
+- Fix: moved row_prev from R0 to R3 (non-zero register supports indexed addressing), used R0 as loop counter instead. Added `MOV R0, R3` in prologue after saving R3 (row_dst) to stack.
+- All `@offset(R0)` became `@offset(R3)`, `*R0` became `*R3` in word 0/7 code.
+- Loop body already worked because it copied R0 to R4 first (`MOV R0, R4; A R3, R4`), so the swap just changed which register holds what.
+- Performance unchanged at 2,577,684 cycles/step (8.0% faster than life2_2x). The extra `MOV R0, R3` is negligible (22 cycles, once per row).
+- Confirmed correct by disassembly: `c1 63 00 0e MOV @14(R3),R5` (indexed with R3) vs previous `c1 60 00 0e MOV @0x000e,R5` (absolute).
+- Added R0 indexing constraint to MEMORY.md as a critical ISA note.
+
+---
+
+## 2026-02-07 FIX i1 zextload backend crash (Cannot select)
+
+**What**: Added `setLoadExtAction` for `MVT::i1` → `Promote` (ZEXT/SEXT/EXT) in the TMS9900 backend. Without this, compiling `if (debug_snapshot_pending)` at -O3 crashed with "Cannot select: load<zext from i1>".
+
+**Where**: `llvm-project/llvm/lib/Target/TMS9900/TMS9900ISelLowering.cpp` (constructor, after the existing i8 load ext actions around line 60)
+
+**Why**: LLVM's optimizer deduced that `debug_snapshot_pending` (a `uint8_t` only assigned 0 or 1) could be treated as `i1`, emitting a `zextload i1` node. The backend only had i8 load extension actions (Custom), not i1. Promoting i1 → i8 lets the existing Custom i8 path handle it.
+
+**Technical notes**: Any `uint8_t` variable that only stores 0/1 values can trigger this at higher optimization levels. The fix is general — affects all future boolean-like byte variables.
+
+---
+
+## 2026-02-07 DONE Debug snapshot auto-clear in life2_2x_opt.c
+
+**What**: Added the missing `if (debug_snapshot_pending) { vdp_debug_clean_snapshot_clear(); }` to the main loop in `life2_2x_opt.c`, completing the one-shot 'F' key snapshot feature.
+
+**Where**: `cart_example/life2_2x_opt.c` main loop (after `vdp_debug_dirty_update()`, before `#endif`)
+
+**Why**: The fix was already applied to `life3.c` but had not been ported to `life2_2x_opt.c`. Without it, pressing 'F' would color tiles purple permanently instead of clearing after one frame.
+
+---
+
+## 2026-02-07 DONE Phase 1 peephole optimizations
+
+**What**: Added 4 new peephole patterns to TMS9900Peephole.cpp: LI -1 → SETO, MOV Rx,Rx self-move deletion, CI Rx,0 elimination when preceding instruction already set flags, and redundant consecutive load elimination.
+
+**Where**: `llvm/lib/Target/TMS9900/TMS9900Peephole.cpp` — all 4 patterns in `runOnMachineFunction()`
+
+**Why**: Every byte matters in 8K cartridge ROM. These patterns eliminate redundant instructions that survive register allocation and prior optimization passes. Combined savings: life2_2x ROM 6848B → 6724B (124B, 1.8%).
+
+**Technical notes**: CI Rx,0 elimination is the most impactful (16/35 instances eliminated in life2_2x, 64 bytes saved). Requires: (1) immediately preceding instruction's operand 0 is def of TestReg, (2) that instruction sets ST, (3) next instruction is a conditional branch. Must mark preceding instruction's ST def as not-dead when eliminating CI. Expanded from JEQ/JNE to all 8 conditional branches (JGT/JLT/JH/JHE/JL/JLE also only test EQ/LGT/AGT flags). Redundant load elimination moved early in the loop (before LI→CLR) to catch more cases.
+
+---
+
+## 2026-02-07 FIX CI Rx,0 elimination: backward walk was unsafe
+
+**What**: Initial CI Rx,0 elimination walked backward to find any instruction defining TestReg. This caused json_parse benchmark to enter an infinite loop.
+
+**Where**: `TMS9900Peephole.cpp`, CI elimination section
+
+**Why**: Multi-def instructions like MOVpim (auto-increment load) have two defs: operand 0 is the loaded value, and a secondary def is the auto-incremented pointer. The ST flags reflect operand 0 (the loaded value), NOT the pointer. If CI tested the pointer register, the backward walk would find MOVpim as a "definer" and incorrectly delete CI, even though flags don't reflect the pointer's value.
+
+**Technical notes**: Fixed by restricting to immediately preceding instruction only, and requiring operand 0 (primary result, which flags reflect) to be TestReg. This is conservative but safe — 16/35 CI Rx,0 still eliminated. The remaining 19 can't be optimized without cross-basic-block analysis or walking past non-ST-clobbering instructions.
+
+---
+
+## 2026-02-07 DONE Indexed load/store folding for global addresses (Task #43)
+
+**What**: Added DAG patterns to fold `LI Rt,global / A Rx,Rt / MOV *Rt,Rd` into `MOV @global(Rx),Rd` for word loads, word stores, byte loads, and byte stores accessing global arrays with a register offset.
+
+**Where**: `llvm/lib/Target/TMS9900/TMS9900InstrInfo.td` (lines ~1984-2000), new test `llvm/test/CodeGen/TMS9900/indexed-global.ll`
+
+**Why**: The TMS9900 indexed addressing mode `@addr(Rx)` can encode a global symbol + register offset in a single 2-word instruction, replacing a 3-instruction sequence (LI+A+MOV*) that uses 4 words. Saves 2 words + ~8 cycles per occurrence.
+
+**Technical notes**: Added 4 patterns matching `(load/store (add (TMS9900Wrapper tglobaladdr:$addr), GR16:$idx))` to emit MOVxm/MOVmx/MOVBxm/MOVBmx. The IdxRegs constraint on these instructions automatically prevents R0 from being used as the index register (R0 cannot be used for indexed addressing on TMS9900). LLVM's pattern matcher handles add commutativity automatically. A similar pattern already existed for jump tables (tjumptable). Current benchmarks don't exercise this pattern (they use pointer arithmetic, not global array indexing), so no size change in existing code. 33/33 lit tests pass, 9/9 benchmarks pass.
+
+---
+
+## 2026-02-07 DONE Free R12 when CRU not used (Task #42)
+
+**What**: Made R12 reservation conditional on a new subtarget feature `FeatureReserveCRU` (default OFF). R12 is now available as a general-purpose register for programs that don't use CRU I/O instructions (LDCR, STCR, SBO, SBZ, TB).
+
+**Where**: `TMS9900.td` (new FeatureReserveCRU), `TMS9900Subtarget.h` (ReserveCRU member), `TMS9900RegisterInfo.cpp` (conditional reservation)
+
+**Why**: R12 was unconditionally reserved as CRU base address, wasting 1 of ~10 allocatable registers. Most programs (benchmarks, Game of Life) never use CRU instructions. Freeing R12 gives the register allocator one more register, reducing spill pressure significantly.
+
+**Technical notes**: Programs needing CRU can compile with `-mattr=+reserve-cru`. Impact was dramatic: life2_2x ROM dropped from 6724B to 6088B (-636B, -9.5%). This is because one extra register eliminates many stack spills in tight loops. Verified safe: 45/45 benchmarks pass across O0/O1/O2/Os/Oz, 57/57 lit tests pass. No cart_example programs use CRU instructions directly (keyboard scanning is done via TI console ROM routines, not direct CRU access).
+
+---
+
+## 2026-02-07 DONE Expand test coverage to 57 tests (Task #44)
+
+**What**: Added 24 new lit tests (19 CodeGen .ll, 4 CodeGen .mir, 1 MC .s) bringing total from 33 to 57, all passing.
+
+**Where**: `llvm/test/CodeGen/TMS9900/` (new files: addressing-modes.ll, calling-convention.ll, 32bit-ops.ll, select-ops.ll, global-address.ll, alu-ops.ll, type-conv.ll, stack-frame.ll, auto-increment.ll, const-materialization.ll, callee-saved.ll, shifts-extended.ll, byte-arith.ll, compare-unsigned.ll, control-flow.ll, inline-asm.ll, volatile-ops.ll, mul-div.ll, pointer-arith.ll, peephole-ci-elim.mir, peephole-seto.mir, peephole-ai-fold.mir, peephole-mov-self.mir), `llvm/test/MC/TMS9900/inst-negative-imm.s`
+
+**Why**: Previous coverage was 33 tests. Needed comprehensive tests for: all addressing modes, calling convention, 32-bit operations, peephole patterns, inline asm, volatile ops, type conversions, stack frames, control flow patterns, etc.
+
+---
+
+## 2026-02-07 PHASE Optimization plan complete
+
+**What**: All 9 items from the TMS9900 optimization plan are complete. Summary of results:
+
+**Metrics**:
+- life2_2x ROM: 6848B → 6088B (-760B, **-11.1%**)
+- Lit tests: 33 → 57 (all passing)
+- Benchmarks: 45/45 across O0/O1/O2/Os/Oz
+
+**Optimizations implemented**:
+1. LI Rx,-1 → SETO Rx (2B savings per instance)
+2. MOV Rx,Rx self-move deletion (2B + 14 cycles per instance)
+3. CI Rx,0 elimination (4B + 14 cycles per instance, 16/35 eliminated in life2_2x)
+4. Redundant consecutive load elimination (4-6B per instance)
+5. AI 0 deletion when ST dead
+6. Indexed global address folding (4B + ~22 cycles per instance)
+7. R12 freed for general allocation (-636B in life2_2x alone)
+
+---
+
+## 2026-02-07 DONE Code quality epoch: self-MOV flag-test and ANDI 0xFF00 elimination
+
+**What**: Added two new peephole optimizations based on waste pattern analysis of life2_2x disassembly. Extended self-MOV elimination to handle live-ST cases where preceding instruction already set flags (8/25 eliminated). Added ANDI Rx,0xFF00 elimination before MOVB stores where the low byte doesn't matter (16/24 eliminated).
+
+**Where**: `TMS9900Peephole.cpp` (lines ~286-340 for self-MOV, ~417-482 for ANDI), new test `peephole-andi-ff00.mir`, updated `peephole-mov-self.mir`
+
+**Why**: Waste analysis of life2_2x found 25 self-MOVs used as flag tests (50B) and 24 redundant ANDI 0xFF00 after MOVB (96B). Self-MOV flag-test uses same safety constraints as CI Rx,0 elimination. ANDI elimination checks that next use is MOVB (only sends high byte) and Rx is killed.
+
+**Technical notes**: Self-MOV remaining 17/25 are at BB boundaries (no local preceding instruction). ANDI remaining 8/24 are before inline assembly MOVB instructions the peephole can't match. Cumulative life2_2x ROM: 6848B → 6008B (-840B, -12.3%). 58 lit tests (46 CG + 12 MC), 9/9 benchmarks. Waste analysis also identified untackled targets: trailing INV (~480K cyc/frame), stack spills (~374K cyc/frame), SRL/SLA→SWPB (~45K cyc/frame).
+
+---
+
+## 2026-02-07 DONE CI Rx,0 -> MOV Rx,Rx strength reduction peephole
+
+**What**: Added Tier 2 fallback for CI Rx,0 optimization. When CI Rx,0 cannot be fully eliminated (Tier 1: preceding instruction set flags on same register), it is now replaced with MOV Rx,Rx -- same 14 cycles, same EQ/LGT/AGT flag semantics, but 2 bytes smaller (2B vs 4B). Saves 36 bytes in life2_2x (18 instances).
+
+**Where**: `TMS9900Peephole.cpp` (CI block restructured with do/while(false) for Tier 1, new Tier 2 at lines ~434-460), updated `peephole-ci-elim.mir` (7 test cases), updated `peephole.mir` (2 CHECK lines)
+
+**Why**: ~18 CI Rx,0 remained in life2_2x where the preceding instruction clobbers flags (e.g., a MOVB store between the value-producing instruction and the CI). Full elimination is unsafe but the encoding can still be shrunk.
+
+**Technical notes**: Fixed a latent bug in ST dead-flag propagation: `findRegisterDefOperandIdx(ST, isDead=true)` on a freshly-built instruction always returns -1 because implicit defs start as non-dead. New code uses `isDead=false, Overlap=true` to find the ST def regardless of dead status. life2_2x ROM: 6008B -> 5972B (-36B). 59 lit tests (47 CG + 12 MC), 9/9 benchmarks pass.
+
+---
+
+*Project Journal - Last Updated: February 7, 2026*
