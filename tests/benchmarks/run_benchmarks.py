@@ -45,6 +45,7 @@ ALL_BENCHMARKS = [
     "vertex3d",
     "huffman",
     "long_torture",
+    "heap4",
 ]
 
 # Benchmarks that halt via IDLE on success
@@ -54,6 +55,7 @@ IDLE_HALT = {
     "vertex3d",
     "huffman",
     "long_torture",
+    "heap4",
 }
 
 LOAD_ADDR = 0x0000
