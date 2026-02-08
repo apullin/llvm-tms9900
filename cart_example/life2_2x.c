@@ -1,12 +1,15 @@
 /*
- * TI-99/4A Game of Life (Graphics II mode) - Optimized version
+ * TI-99/4A Game of Life (Graphics II mode)
  * 2x scaled rendering from a 128x96 cell grid.
  *
- * Optimizations over life2x.c:
- *   1. Simplified Life rule: bit1 & ~bit2 & ~bit3 & (bit0 | mC)
- *   2. Word-level active_tiles check (two uint16_t loads)
- *   3. Sliding window row access (3 loads/word instead of 9)
- *   4. Word-level tile array clears
+ * Pure C implementation compiled by TMS9900 LLVM backend.
+ *
+ * Key optimizations:
+ *   - CSA (carry-save adder) tree for bit-parallel neighbor counting
+ *   - Tile-based dirty tracking to skip unchanged regions
+ *   - Row-streaming VDP writes: stream entire character rows (256
+ *     contiguous VRAM bytes) with one address setup instead of per-tile.
+ *   - Sliding window avoids redundant shift computations
  */
 
 #include <stdint.h>
@@ -229,6 +232,7 @@ static uint8_t dirty_tiles[LIFE_TILES_H][LIFE_TILES_W] __attribute__((aligned(2)
 #if LIFE_DEBUG_DIRTY
 static uint8_t dirty_prev[LIFE_TILES_H][LIFE_TILES_W];
 static uint8_t debug_dirty_enabled;
+static uint8_t debug_snapshot_pending;
 static uint8_t debug_key_prev;
 static uint16_t entropy;
 static uint8_t seed_density = LIFE_SEED_DENSITY;
@@ -654,20 +658,73 @@ static void vdp_write_dirty_patterns(uint8_t (*b)[CELL_ROW_BYTES]) {
         :
         :
         : "memory");
-    uint16_t tile_row_start = (uint16_t)(LIFE_REGION_Y0 >> 3);
-    uint16_t tile_col_start = (uint16_t)(LIFE_REGION_X0 >> 3);
-    uint16_t ty;
-    uint16_t tx;
 
-    /* Draw only tiles marked dirty by the last update. */
+    /*
+     * Row-streaming VDP writes.
+     *
+     * In Graphics II with identity name table, character row R's pattern
+     * data occupies 256 contiguous VRAM bytes.  We set the VDP address
+     * once per row and stream all 32 tiles (256 bytes) sequentially.
+     *
+     * Life tiles are 4×4 cells scaled 2× to 8×8 pixels = one VDP pattern.
+     * LIFE_TILES_H = 24 tile rows = 24 character rows.
+     * LIFE_TILES_W = 32 tile cols = 32 characters per row.
+     *
+     * Group layout:  group 0 = char rows 0-7  (VRAM 0x0000)
+     *                group 1 = char rows 8-15 (VRAM 0x0800)
+     *                group 2 = char rows 16-23 (VRAM 0x1000)
+     *
+     * VDP address for char row ty: PATTERN_TABLE_ADDR + (ty/8)*0x0800 + (ty%8)*256
+     * which simplifies to PATTERN_TABLE_ADDR + ty*256 since groups are contiguous.
+     */
+    uint16_t vdp_addr = PATTERN_TABLE_ADDR;
+    uint16_t ty;
+
     for (ty = 0; ty < LIFE_TILES_H; ty++) {
-        for (tx = 0; tx < LIFE_TILES_W; tx++) {
-            if (!dirty_tiles[ty][tx]) {
+        /* Dirty-row check: skip rows with no dirty tiles. */
+        {
+            uint16_t row_dirty = 0;
+            uint16_t i;
+            for (i = 0; i < LIFE_TILES_W; i += 2) {
+                row_dirty |= *(u16_alias *)&dirty_tiles[ty][i];
+            }
+            if (!row_dirty) {
+                vdp_addr += 256;
                 continue;
             }
-            vdp_write_tile_scaled(ty, tx, tile_row_start, tile_col_start, b);
         }
+
+        vdp_set_write_addr(vdp_addr);
+
+        /* Stream 32 tiles = 16 tile-pairs (high + low nibble per byte).
+         * Each tile: 4 cell rows × 2 VDP bytes (expand4 doubled) = 8 bytes.
+         * Two tiles per cell byte: high nibble = even tile, low = odd tile. */
+        {
+            uint16_t cell_y = (uint16_t)(ty << 2);
+            uint16_t byte_idx;
+            for (byte_idx = 0; byte_idx < CELL_ROW_BYTES; byte_idx++) {
+                uint8_t v0 = b[cell_y][byte_idx];
+                uint8_t v1 = b[cell_y + 1][byte_idx];
+                uint8_t v2 = b[cell_y + 2][byte_idx];
+                uint8_t v3 = b[cell_y + 3][byte_idx];
+                uint8_t e;
+
+                /* High nibble tile (even tx) — 8 bytes */
+                e = expand4[v0 >> 4]; vdp_data(e); vdp_data(e);
+                e = expand4[v1 >> 4]; vdp_data(e); vdp_data(e);
+                e = expand4[v2 >> 4]; vdp_data(e); vdp_data(e);
+                e = expand4[v3 >> 4]; vdp_data(e); vdp_data(e);
+
+                /* Low nibble tile (odd tx) — 8 bytes */
+                e = expand4[v0 & 0x0F]; vdp_data(e); vdp_data(e);
+                e = expand4[v1 & 0x0F]; vdp_data(e); vdp_data(e);
+                e = expand4[v2 & 0x0F]; vdp_data(e); vdp_data(e);
+                e = expand4[v3 & 0x0F]; vdp_data(e); vdp_data(e);
+            }
+        }
+        vdp_addr += 256;
     }
+
     /* Tracepoint label for draw timing (tms9900-trace). */
     asm volatile(
         ".globl life_draw_end\n"
@@ -803,6 +860,24 @@ static void vdp_debug_clean_snapshot(void) {
                                color_clean);
         }
     }
+    debug_snapshot_pending = 1;
+}
+
+static void vdp_debug_clean_snapshot_clear(void) {
+    uint16_t tile_row_start = (uint16_t)(LIFE_REGION_Y0 >> 3);
+    uint16_t tile_col_start = (uint16_t)(LIFE_REGION_X0 >> 3);
+    uint16_t ty;
+    uint16_t tx;
+    uint8_t color_normal = (uint8_t)((COLOR_FG << 4) | (COLOR_BG & 0x0F));
+
+    for (ty = 0; ty < LIFE_TILES_H; ty++) {
+        for (tx = 0; tx < LIFE_TILES_W; tx++) {
+            vdp_set_tile_color((uint16_t)(tile_row_start + ty),
+                               (uint16_t)(tile_col_start + tx),
+                               color_normal);
+        }
+    }
+    debug_snapshot_pending = 0;
 }
 
 static void reseed_board(uint8_t (*b)[CELL_ROW_BYTES]) {
@@ -889,6 +964,9 @@ void main(void) {
         }
         if (debug_dirty_enabled) {
             vdp_debug_dirty_update();
+        }
+        if (debug_snapshot_pending) {
+            vdp_debug_clean_snapshot_clear();
         }
 #endif
         vdp_write_dirty_patterns(cur);
