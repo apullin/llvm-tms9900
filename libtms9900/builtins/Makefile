@@ -10,12 +10,19 @@ CC = ../../llvm-project/build/bin/clang
 AR = ../../llvm-project/build/bin/llvm-ar
 
 ASFLAGS = --target=tms9900 -c
+CFLAGS = --target=tms9900 -O2 -c
 
-# Source files
-SRCS = mul32.S div32.S shift32.S memcpy.S memset.S memmove.S
+# Assembly source files (32-bit builtins + memops)
+ASM_SRCS = mul32.S div32.S shift32.S memcpy.S memset.S memmove.S
+
+# C source files (64-bit builtins)
+I64_SRCS = i64/muldi3.c i64/udivmoddi4.c i64/divdi3.c i64/udivdi3.c \
+           i64/moddi3.c i64/umoddi3.c
 
 # Object files
-OBJS = $(SRCS:.S=.o)
+ASM_OBJS = $(ASM_SRCS:.S=.o)
+I64_OBJS = $(notdir $(I64_SRCS:.c=.o))
+ALL_OBJS = $(ASM_OBJS) $(I64_OBJS)
 
 BUILD = build
 
@@ -29,17 +36,22 @@ $(BUILD):
 $(BUILD)/%.o: %.S | $(BUILD)
 	$(CC) $(ASFLAGS) -o $@ $<
 
+# Pattern rule for compiling i64 C sources
+$(BUILD)/%.o: i64/%.c | $(BUILD)
+	$(CC) $(CFLAGS) -o $@ $<
+
 # Clean up
 clean:
 	rm -rf $(BUILD)
 
-$(BUILD)/libbuiltins.a: $(OBJS:%.o=$(BUILD)/%.o)
+$(BUILD)/libbuiltins.a: $(ALL_OBJS:%.o=$(BUILD)/%.o)
 	$(AR) rcs $@ $^
 
 # Show what would be built
 info:
-	@echo "Sources: $(SRCS)"
-	@echo "Objects: $(OBJS)"
-	@echo "Assembler: $(CC)"
+	@echo "ASM Sources: $(ASM_SRCS)"
+	@echo "I64 Sources: $(I64_SRCS)"
+	@echo "All Objects: $(ALL_OBJS)"
+	@echo "Compiler: $(CC)"
 
 .PHONY: all clean info

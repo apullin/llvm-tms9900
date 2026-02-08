@@ -41,7 +41,7 @@ SOFTFLOAT_OBJS = $(SOFTFLOAT_SRCS:%.c=$(BUILD)/sf_%.o)
 FP_BUILTINS_SRC = $(ROOT)/tests/fp32_builtins.c
 
 # Benchmark programs (no special libs needed)
-BASIC_BENCHMARKS = fib bubble_sort deep_recursion crc32 q7_8_matmul json_parse vertex3d huffman long_torture heap4
+BASIC_BENCHMARKS = fib bubble_sort deep_recursion crc32 q7_8_matmul json_parse vertex3d huffman long_torture heap4 i64_torture
 
 # Benchmarks needing strlen/strcmp (link with builtins for memcpy etc)
 STRING_BENCHMARKS = string_torture
@@ -80,7 +80,7 @@ $(BUILD)/fp32_builtins.o: $(FP_BUILTINS_SRC) | $(BUILD)
 $(BUILD)/fib.elf $(BUILD)/bubble_sort.elf $(BUILD)/deep_recursion.elf \
 $(BUILD)/crc32.elf $(BUILD)/q7_8_matmul.elf $(BUILD)/json_parse.elf \
 $(BUILD)/vertex3d.elf $(BUILD)/huffman.elf $(BUILD)/long_torture.elf \
-$(BUILD)/heap4.elf: \
+$(BUILD)/heap4.elf $(BUILD)/i64_torture.elf: \
 $(BUILD)/%.elf: $(BUILD)/bench_start.o $(BUILD)/%.o $(BUILTINS) | $(BUILD)
 	$(LD) $(LDFLAGS) -o $@ $^
 

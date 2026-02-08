@@ -46,6 +46,7 @@ ALL_BENCHMARKS = [
     "huffman",
     "long_torture",
     "heap4",
+    "i64_torture",
 ]
 
 # Benchmarks that halt via IDLE on success
@@ -56,6 +57,7 @@ IDLE_HALT = {
     "huffman",
     "long_torture",
     "heap4",
+    "i64_torture",
 }
 
 LOAD_ADDR = 0x0000

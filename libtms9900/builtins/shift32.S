@@ -41,12 +41,12 @@ ASHL_OK:
 
 ASHL_LOOP:
 ; Shift one bit at a time
-; Shift R1 left, carry out goes to R0
-       SLA  R1,1              ; Shift low word left
-       JNC  ASHL_NC
-       INC  R0                ; Set bit 0 of high word
-ASHL_NC:
+; Shift R0 left first (makes room at bit 15 for carry from R1)
        SLA  R0,1              ; Shift high word left
+       SLA  R1,1              ; Shift low word left (carry = old MSB of R1)
+       JNC  ASHL_NC
+       INC  R0                ; Set bit 15 (LSB) of high word
+ASHL_NC:
        DEC  R2
        JNE  ASHL_LOOP
 
@@ -78,12 +78,12 @@ LSHR_OK:
 
 LSHR_LOOP:
 ; Shift one bit at a time
-; Shift R0 right, carry out goes to R1
-       SRL  R0,1              ; Shift high word right
-       JNC  LSHR_NC
-       ORI  R1,0x8000         ; Set bit 15 of low word
-LSHR_NC:
+; Shift R1 right first (makes room at bit 0 for carry from R0)
        SRL  R1,1              ; Shift low word right
+       SRL  R0,1              ; Shift high word right (carry = old LSB of R0)
+       JNC  LSHR_NC
+       ORI  R1,0x8000         ; Set bit 0 (MSB) of low word
+LSHR_NC:
        DEC  R2
        JNE  LSHR_LOOP
 
@@ -129,12 +129,12 @@ ASHR_CONT:
 
 ASHR_LOOP:
 ; Shift one bit at a time, preserving sign
-; Use SRA for high word (preserves sign bit)
-       SRA  R0,1              ; Arithmetic shift high word right
-       JNC  ASHR_NC
-       ORI  R1,0x8000         ; Set bit 15 of low word
-ASHR_NC:
+; Shift R1 right first (makes room at bit 0 for carry from R0)
        SRL  R1,1              ; Logical shift low word right
+       SRA  R0,1              ; Arithmetic shift high word right (carry = old LSB of R0)
+       JNC  ASHR_NC
+       ORI  R1,0x8000         ; Set bit 0 (MSB) of low word
+ASHR_NC:
        DEC  R2
        JNE  ASHR_LOOP
 
