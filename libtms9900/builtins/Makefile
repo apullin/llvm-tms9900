@@ -10,7 +10,7 @@ CC = ../../llvm-project/build/bin/clang
 AR = ../../llvm-project/build/bin/llvm-ar
 
 ASFLAGS = --target=tms9900 -c
-CFLAGS = --target=tms9900 -O2 -c
+CFLAGS = --target=tms9900 -O2 -fno-builtin -c
 
 # Assembly source files (32-bit builtins + memops)
 ASM_SRCS = mul32.S div32.S shift32.S memcpy.S memset.S memmove.S
@@ -19,10 +19,14 @@ ASM_SRCS = mul32.S div32.S shift32.S memcpy.S memset.S memmove.S
 I64_SRCS = i64/muldi3.c i64/udivmoddi4.c i64/divdi3.c i64/udivdi3.c \
            i64/moddi3.c i64/umoddi3.c
 
+# C source files (runtime support)
+RT_SRCS = malloc.c string_utils.c
+
 # Object files
 ASM_OBJS = $(ASM_SRCS:.S=.o)
 I64_OBJS = $(notdir $(I64_SRCS:.c=.o))
-ALL_OBJS = $(ASM_OBJS) $(I64_OBJS)
+RT_OBJS = $(RT_SRCS:.c=.o)
+ALL_OBJS = $(ASM_OBJS) $(I64_OBJS) $(RT_OBJS)
 
 BUILD = build
 
@@ -38,6 +42,10 @@ $(BUILD)/%.o: %.S | $(BUILD)
 
 # Pattern rule for compiling i64 C sources
 $(BUILD)/%.o: i64/%.c | $(BUILD)
+	$(CC) $(CFLAGS) -o $@ $<
+
+# Pattern rule for compiling runtime C sources
+$(BUILD)/%.o: %.c | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $<
 
 # Clean up
