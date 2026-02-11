@@ -20,7 +20,7 @@ __attribute__((noinline, optnone)) static uint32_t id32(uint32_t x) { return x; 
 __attribute__((noinline, optnone)) static uint16_t id16(uint16_t x) { return x; }
 
 /* Accumulate both halves of a 32-bit result into a 16-bit checksum */
-__attribute__((noinline)) static unsigned int fold32(unsigned int check, uint32_t val) {
+static unsigned int fold32(unsigned int check, uint32_t val) {
     check ^= (unsigned int)(val >> 16);
     check ^= (unsigned int)(val & 0xFFFFUL);
     return check;

@@ -185,43 +185,49 @@ UDIV32_SW:
 UDIV_LOOP:
 ; Shift 64-bit remainder:quotient left by 1
 ; Order: R6:R7:R4:R5 is the 64-bit value
-; MSB of R4 goes into LSB of R7
+;
+; After shift:
+;   R5_new = R5_old << 1
+;   R4_new = (R4_old << 1) | (R5_old >> 15)
+;   R7_new = (R7_old << 1) | (R4_old >> 15)
+;   R6_new = (R6_old << 1) | (R7_old >> 15)
+;
+; Strategy: save MSB of each word into bit 0 of R0/R1, then shift,
+; then OR the saved bits into the next higher word.
+; We can reuse R0 and R1 since dividend is already copied to R4:R5.
 
-; First, get the carry bit (MSB of R4) into a temp
-       MOV  R4,R0             ; Copy quotient high
-       SLA  R0,1              ; Shift to get MSB into carry
+; Save MSB of R7 (will go into R6 bit 0)
+       MOV  R7,R1
+       SRL  R1,15             ; R1 = old R7 bit 15 (0 or 1)
+; Save MSB of R4 (will go into R7 bit 0)
+       MOV  R4,R0
+       SRL  R0,15             ; R0 = old R4 bit 15 (0 or 1)
+; Shift R5 left; carry from R5 goes into R4
+       SLA  R5,1
        JNC  UDIV_NC1
-; Carry is set - MSB of quotient was 1
-       SLA  R5,1              ; Shift quotient low
-       SLA  R4,1              ; Shift quotient high
-       SLA  R7,1              ; Shift remainder low
-       INC  R7                ; Set LSB (the carry from quotient)
-       JNC  UDIV_NC2
-       INC  R6                ; Carry from R7 into R6
-UDIV_NC2:
-       SLA  R6,1              ; Shift remainder high
-       JMP  UDIV_CMP
-
+; Carry from R5 — must set R4 bit 0 AFTER shifting R4
+       SLA  R4,1              ; Shift R4 (bit 0 = 0)
+       INC  R4                ; Set bit 0 from R5 carry
+       JMP  UDIV_R4_DONE
 UDIV_NC1:
-; Carry is clear - MSB of quotient was 0
-       SLA  R5,1              ; Shift quotient low
-       JNC  UDIV_NC3
-       INC  R4                ; Carry from R5 bit 15 into R4 bit 0
-UDIV_NC3:
-       SLA  R4,1              ; Shift quotient high
-       SLA  R7,1              ; Shift remainder low (bit from quotient is 0)
-       JNC  UDIV_NC4
-       INC  R6                ; Carry from R7 into R6
-UDIV_NC4:
-       SLA  R6,1              ; Shift remainder high
+       SLA  R4,1              ; Shift R4 (no carry from R5)
+UDIV_R4_DONE:
+; Shift R7 left, then OR in saved R4 MSB
+       SLA  R7,1
+       A    R0,R7             ; Add saved bit (0 or 1) — sets R7 bit 0
+; Shift R6 left, then OR in saved R7 MSB
+       SLA  R6,1
+       A    R1,R6             ; Add saved bit (0 or 1) — sets R6 bit 0
 
 UDIV_CMP:
 ; Compare remainder (R6:R7) with divisor (R2:R3)
-       C    R6,R2             ; Compare high words
-       JL   UDIV_NEXT         ; remainder < divisor, skip
-       JH   UDIV_SUB          ; remainder > divisor, subtract
-       C    R7,R3             ; High equal, compare low
-       JL   UDIV_NEXT         ; remainder < divisor, skip
+; Note: C Rx,Ry in LLVM assembler sets LGT when Ry > Rx (unsigned).
+; So JH (LGT && !EQ) fires when Ry > Rx, and JL (!LGT && !EQ) fires when Ry < Rx.
+       C    R6,R2             ; Compare high words: LGT if R2 > R6
+       JH   UDIV_NEXT         ; R2 > R6: divisor_hi > rem_hi → remainder < divisor, skip
+       JL   UDIV_SUB          ; R2 < R6: divisor_hi < rem_hi → remainder > divisor, subtract
+       C    R7,R3             ; High equal, compare low: LGT if R3 > R7
+       JH   UDIV_NEXT         ; R3 > R7: divisor_lo > rem_lo → remainder < divisor, skip
 
 UDIV_SUB:
 ; Subtract divisor from remainder: R6:R7 -= R2:R3
