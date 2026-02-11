@@ -47,6 +47,12 @@ ALL_BENCHMARKS = [
     "long_torture",
     "heap4",
     "i64_torture",
+    "cpp_test",
+    "lambda_test",
+    "mi_test",
+    "cpp_adv_test",
+    "stl_test",
+    "stl_util_test",
 ]
 
 # Benchmarks that halt via IDLE on success
@@ -58,6 +64,12 @@ IDLE_HALT = {
     "long_torture",
     "heap4",
     "i64_torture",
+    "cpp_test",
+    "lambda_test",
+    "mi_test",
+    "cpp_adv_test",
+    "stl_test",
+    "stl_util_test",
 }
 
 LOAD_ADDR = 0x0000

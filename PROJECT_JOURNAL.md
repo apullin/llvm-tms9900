@@ -1516,4 +1516,338 @@ llvm-objcopy -O binary program.elf program.bin
 
 ---
 
-*Project Journal - Last Updated: February 7, 2026*
+## 2026-02-07 DONE Peephole: SWPB folding and Crr elimination
+
+**What**: Added two peephole optimizations: (1) SRL/SLA Rx,8 + ANDI → SWPB Rx + ANDI (2B smaller, 26 cycles faster per instance), (2) Crr elimination: delete C Rx,Ry when one operand is provably zero and preceding instruction already set flags. Also added SLA Rx,8 + MOVB → SWPB Rx + MOVB variant for byte stores.
+
+**Where**: `TMS9900Peephole.cpp` — new `trySWPBFolding()` and `tryCrrElimination()` functions
+
+**Why**: SWPB folding targets byte-swap patterns common in byte load/store sequences. Crr elimination removes compare instructions that are redundant because the preceding instruction already set the needed flags with a zero operand. life2_2x ROM: 5972B → 5916B (-56B).
+
+---
+
+## 2026-02-07 DONE Benchmarks: huffman codec, 32-bit arithmetic torture, heap4 allocator
+
+**What**: Added 3 new benchmarks bringing suite from 10 to 13 programs, all passing across O0/O1/O2 (39/39).
+
+**Where**: `tests/benchmarks/huffman.c`, `tests/benchmarks/long_torture.c`, `tests/benchmarks/heap4.c`, updated `Makefile` and `run_benchmarks.py`
+
+**Why**: Expand test coverage with diverse workloads — Huffman exercises bit manipulation and tree traversal, long_torture validates 30 different 32-bit operations, heap4 tests a FreeRTOS-style dynamic memory allocator with coalescing.
+
+**Technical notes**:
+- **huffman**: 1266B text at O2, 520K cycles. Encode+decode+verify cycle with frequency table, Huffman tree, and bitstream operations.
+- **long_torture**: 1584B text at O2, 21K cycles. 30 tests: add/sub with carry, multiply, shifts, bitwise, comparisons, chain computations. Uses noinline fold32 (inlined version triggers O2 miscompilation — 0x8000 checksum error).
+- **heap4**: 2042B text at O2, 114K cycles. 2048-byte static heap, first-fit allocation, block splitting, adjacent-block coalescing. 7-phase test workload.
+- Discovered SLA Rw,0 with R0=0 shifts by 16 (not no-op) — worked around in huffman code.
+
+---
+
+## 2026-02-07 FIX Variable shift-by-zero hardware quirk (SLA/SRA/SRL)
+
+**What**: Fixed compiler bug where variable shifts could produce incorrect results when the shift count is zero. TMS9900 hardware treats R0=0 in `SLA Rw,0` (variable shift via R0) as shift-by-16, not shift-by-0.
+
+**Where**: `TMS9900ISelLowering.cpp` — SLA_VAR/SRA_VAR/SRL_VAR expansion in `EmitInstrWithCustomInserter()`. New lit test `var-shift-zero.ll`.
+
+**Why**: Variable shift pseudos expanded to `MOV cnt,R0; SLA Rw,0`. When cnt=0, R0=0, and the 4-bit count encoding treats 0 as 16. This is documented in TMS9900 Data Manual page 26 and confirmed by MAME reference emulator.
+
+**Technical notes**: Fix adds a JEQ guard: `MOV cnt,R0; JEQ done; SLA Rw,0; done: PHI [shifted, shift_bb], [original, start_bb]`. Combined three separate cases into one switch. Constant shifts (e.g., `SLA R1,3`) are unaffected — only variable (count-from-R0) shifts had the bug. 63 lit tests (51 CodeGen + 12 MC), 39/39 benchmarks pass.
+
+---
+
+## 2026-02-07 DISCOVERY Byte ISel improvement opportunities
+
+**What**: Investigation of byte operation code generation quality. Current promote-to-i16 architecture is sound but peephole improvements are possible.
+
+**Where**: Analysis of compiled byte-heavy code patterns.
+
+**Why**: Identified two priority improvements:
+- **Priority 1**: SRL Rx,8 + CI Rx,N → CI Rx,(N<<8) — fold byte comparison with pre-shifted value. Saves 2 bytes + 22 cycles per instance.
+- **Priority 2**: CB (compare bytes) instruction — compare memory/register bytes directly without SRL/MOVB. Requires ISel pattern or peephole to detect byte-compare opportunities.
+
+**Technical notes**: ISel restructuring to MSP430-style GR8 subregisters is NOT recommended — TMS9900 MOVB operates on HIGH byte (unlike MSP430's LOW byte), making the register promotion approach correct. The improvements should be peephole-level.
+
+---
+
+## 2026-02-07 DISCOVERY Fragile O2 codegen root cause analysis
+
+**What**: Investigated the O2 miscompilation in long_torture (0x8000 checksum error when fold32 is inlined). Bug does not reproduce with current compiler/code.
+
+**Where**: Analysis of compiled output for various long_torture code shapes.
+
+**Why**: Root cause was likely previously-fixed bugs: SELECT16 PHI SSA form fix and/or frame index scratch register clobber fix. The bug only appeared with the original volatile _result/_halt halt pattern, not with the halt_ok()/fail_loop() pattern used in the final code.
+
+**Technical notes**: Found two latent issues during investigation: (1) SWPB incorrectly modeled as `Defs=[ST]` in InstrInfo.td — real hardware doesn't affect ST. Conservative (safe but may inhibit some peephole opportunities). (2) Post-increment fold in peephole may not check ST liveness. Neither causes current failures.
+
+---
+
+## 2026-02-07 DONE Final delivery phase: i64 runtime library
+
+**What**: Implemented 64-bit integer runtime functions (__muldi3, __udivmoddi4, __divdi3, __udivdi3, __moddi3, __umoddi3) and i64_torture benchmark. All 14 benchmarks pass at O0/O1/O2.
+
+**Where**: `libtms9900/builtins/i64/` (6 new C files), `libtms9900/builtins/Makefile`, `tests/benchmarks/i64_torture.c`
+
+**Why**: i64 operations (long long) needed runtime support. LLVM legalizes i64 → 2×i32 → 4×i16, generating libcalls for mul/div/mod.
+
+**Technical notes**: compiler-rt's `__udivmoddi4` uses inline i64 subtract/shift expressions that miscompile on TMS9900. Rewrote division loop with explicit 32-bit word operations (hi32/lo32/make64 helpers). Also fixed latent shift32.S bug: bit-by-bit shift loop had wrong word order (must shift high first for left shift, low first for right shift).
+
+---
+
+## 2026-02-07 FIX shift32.S carry propagation bug
+
+**What**: Fixed bit-by-bit shift loop in __ashlsi3/__lshrsi3/__ashrsi3 that had wrong word shift order, causing carry bits to be lost.
+
+**Where**: `libtms9900/builtins/shift32.S`
+
+**Why**: __ashlsi3 was shifting R1 (low) before R0 (high), so the carry from R1's MSB was lost. __lshrsi3 was shifting R0 (high) before R1 (low), same issue.
+
+**Technical notes**: Left shift must do SLA R0,1 then SLA R1,1 then propagate carry. Right shift must do SRL R1,1 then SRL/SRA R0,1 then propagate carry. This was latent — only triggered by i64 code paths using 32-bit shifts with counts > hardware shift range.
+
+---
+
+## 2026-02-07 DONE Final delivery phase: backend documentation
+
+**What**: Created comprehensive TMS9900.rst backend documentation covering architecture, ABI, calling convention, toolchain usage, subtarget features, instruction set, known limitations, and runtime library.
+
+**Where**: `llvm-project/llvm/docs/TMS9900.rst`
+
+**Why**: First-class LLVM targets need documentation. This serves as the reference for anyone using or maintaining the backend.
+
+---
+
+## 2026-02-07 DONE Final delivery phase: disassembler completeness audit
+
+**What**: Created disasm-comprehensive.s with ~200 instruction/addressing-mode round-trip tests. No disassembler bugs found.
+
+**Where**: `llvm-project/llvm/test/MC/TMS9900/disasm-comprehensive.s` (1127 lines)
+
+**Why**: Verify every instruction encoding/decoding path works correctly. Tests both assembly encoding (CHECK) and disassembly (DISASM) in a single file.
+
+**Technical notes**: Covers all 5 addressing modes × all Format1 instructions, plus Format2 (MPY/DIV/XOR/etc), shifts, immediates, jumps, CRU, and special instructions. 16/16 MC tests pass.
+
+---
+
+## 2026-02-07 CLEANUP Code quality audit
+
+**What**: Removed 10 unused includes from 3 backend source files and fixed 1 stale comment.
+
+**Where**: `TMS9900AsmPrinter.cpp` (5 includes + comment), `TMS9900FrameLowering.cpp` (2 includes), `TMS9900ISelDAGToDAG.cpp` (3 includes)
+
+**Why**: Reduce unnecessary compilation dependencies and keep code clean for upstream review.
+
+---
+
+## 2026-02-07 PHASE Final delivery phase complete
+
+**What**: All 5 delivery items completed: (1) lit.local.cfg verified, (2) code quality audit, (3) disassembler completeness, (4) backend documentation, (5) i64 runtime library.
+
+**Where**: Across submodule and outer repo. Commits: `df0576681` (submodule), `31a2636` (outer repo).
+
+**Why**: This concludes the final polish phase. Backend is now functionally complete with 98 lit tests (82 CodeGen + 16 MC), 14 benchmarks (42/42 across O0/O1/O2), comprehensive documentation, and full integer support through 64-bit.
+
+---
+
+## 2026-02-09 DISCOVERY CoreMark stress test: SRL shift-by-zero miscompilation
+
+**What**: CoreMark ported to TMS9900 freestanding environment. Passes CRC validation at -O0, -O1, -O2, -O3. Fails at -Os and -Oz due to variable-count SRL instruction when shift amount is 0 (TMS9900 treats R0=0 as shift-by-16).
+
+**Where**: Bug manifests in `core_main.c` expression `(1 << (ee_u32)i) & results[0].execs`. Root cause is in backend shift lowering (`TMS9900ISelLowering.cpp` / `TMS9900InstrInfo.td`). Minimal reproducer: `tests/stress/coremark/Os_repro.c`. Full bug report: `tests/stress/BUGS.md` (Bug 7).
+
+**Why**: The TMS9900 SRL/SLA/SRA instructions with count field = 0 read the count from R0 bits 12-15. When R0[12:15] = 0, hardware shifts by 16 (not 0). The compiler generates `SRL R6,0` for variable shifts without guarding against count=0. At -O2/-O3, the loop is unrolled and constant-folded, avoiding the variable shift. At -Os/-Oz, the loop is kept, exposing the bug.
+
+**Technical notes**: The corruption cascade in full CoreMark: shift bug -> num_algorithms=2 instead of 3 -> size=1000 instead of 666 -> memblock[1]=0x0000 -> core_list_init writes linked list data to address 0x0000 -> .text section corrupted -> CPU executes garbage -> infinite loop.
+
+---
+
+## 2026-02-09 FIX Bug 7: Variable shift-by-zero (CMPBRri approach)
+
+**What**: Fixed the SLA_VAR/SRA_VAR/SRL_VAR shift-by-zero miscompilation that caused CoreMark -Os/-Oz to fail. The zero-guard now uses CMPBRri (a terminator pseudo) instead of MOV+JEQ, preventing PHI elimination from breaking the flag chain.
+
+**Where**: `TMS9900ISelLowering.cpp` (EmitInstrWithCustomInserter, SLA_VAR/SRA_VAR/SRL_VAR case), `TMS9900InstrInfo.td` (added R0 to Defs), `var-shift-zero.ll` (updated lit test)
+
+**Why**: The original fix emitted `MOV $cnt, R0; JEQ DoneBB` in StartBB. PHI elimination inserted copies (e.g., `MOV R1, R6`) between MOV and JEQ, clobbering ST flags. The JEQ then tested the wrong register and failed to skip the shift when count=0.
+
+**Technical notes**:
+- New approach: CMPBRri is a terminator pseudo. PHI copies are placed BEFORE terminators, so they go before CMPBRri, not between CI and JEQ. CMPBRri expands atomically to CI+JEQ in expandPostRAPseudo.
+- MOV $cnt, R0 moved to ShiftBB (the shift basic block) where it can't be disrupted.
+- First attempted expandPostRAPseudo approach but discovered it can't split MBBs: the ExpandPostRAPseudos pass uses `make_early_inc_range(MBB)`, and splicing instructions to a new MBB orphans the iterator, causing an infinite loop.
+- Verification: CoreMark passes at O0, O1, O2, O3, Os, Oz. Os_repro.c passes. 82/82 lit tests, 16/16 MC tests, 14/14 benchmarks.
+
+---
+
+## 2026-02-09 DISCOVERY Csmith 16-bit int semantic differences vs real bugs
+
+**What**: Analyzed 3 Csmith checksum mismatches (test_1, test_3, test_11). Determined 2/3 are NOT compiler bugs but 16-bit int semantic differences. test_3 may have a real O1+ optimizer bug.
+
+**Where**: `tests/stress/csmith/test_{1,3,11}.c`, `tests/stress/BUGS.md`
+
+**Why**: test_1 and test_11 produce the same (wrong vs native) checksum at O0, O1, and O2 — self-consistent across all optimization levels. This proves the compiler is correct; the difference is from C integer promotion rules (`int16_t+int16_t` promotes to 32-bit int on x86 but stays 16-bit on TMS9900). Overriding INT_MAX macros doesn't change actual int width.
+
+**Technical notes**: test_3 has O0=FA241ADF but O1/O2/Os=1A77C269, suggesting a real optimizer bug on top of the semantic difference. Deferred — needs C-Reduce minimization. Key lesson: Csmith is NOT a reliable cross-platform correctness oracle when int width differs. Self-consistency checks (same result across opt levels on the SAME target) are the right approach.
+
+---
+
+## 2026-02-09 FIX Stack alignment: Align(2)/S16 -> Align(4)/S32 to fix ORI-instead-of-ADD bug
+
+**What**: Fixed a miscompilation where LLVM's DAG combiner transforms `ADD(ptr, 2)` to `OR(ptr, 2)` for computing the low-word address of split i32 stack values. With 2-byte stack alignment, stack addresses like 0xFAFE have bit 1 already set, making `ORI Rx,2` a no-op — causing the high word to be read twice instead of accessing the low word.
+
+**Where**: `TMS9900FrameLowering.cpp` (prologue/epilogue +2 alignment padding), `TMS9900RegisterInfo.cpp` (eliminateFrameIndex +2 offset adjustment), `TMS9900TargetMachine.cpp` (S16->S32 data layout), `clang/lib/Basic/Targets/TMS9900.h` (S16->S32), `calling-convention.ll` and `spill-reload.ll` (updated test expectations)
+
+**Why**: The root cause was traced via Csmith test_3 O0 vs O1 checksum mismatch. Execution trace comparison showed divergence at a JNE branch where a 32-bit zero-check read the high word twice (via ORI no-op) instead of reading both words. The DAGCombiner fold at line 2977 (`(a+b) -> (a|b) iff no common bits`) is correct generically but requires 4-byte-aligned stack bases.
+
+**Technical notes**:
+- Stack alignment changed to `Align(4)` in FrameLowering and `S32` in data layout
+- Non-leaf functions push R11 with DECT (2 bytes), breaking 4-byte alignment. Fix: prologue adds +2 padding to the AI allocation (`AI R10,-(StackSize+2)` instead of `AI R10,-StackSize`), making total displacement StackSize+4 (4-aligned)
+- `eliminateFrameIndex` adds +2 to StackAdj for non-leaf functions with stack objects to account for the padding
+- Leaf functions (no DECT) need no padding — SP stays 4-aligned naturally
+- Non-leaf with StackSize=0 needs no padding — no stack accesses to misalign
+- All 98 lit tests pass (82 CodeGen + 16 MC), 42/42 benchmarks pass (O0/O1/O2)
+- Csmith test_3 O0 now correct (FA24:1ADF). O1+ still wrong — separate backend bug, likely in CodeGenPrepare/ISel interaction (confirmed via `-disable-cgp` fixing limit=7 IR, but full pipeline has additional issues)
+
+---
+
+## 2026-02-10 FIX Bug 9: ANDrr pseudo missing `Defs = [ST]`
+
+**What**: The `ANDrr` pseudo instruction (expands to INV+SZC+INV) was defined without `Defs = [ST]`, meaning LLVM's instruction scheduler and register allocator did not know that ANDrr clobbers the status register. This allowed flag-dependent sequences to be reordered across ANDrr expansions, corrupting comparison results.
+
+**Where**: `llvm-project/llvm/lib/Target/TMS9900/TMS9900InstrInfo.td` (line ~301, ANDrr definition)
+
+**Why**: All three expansion instructions (INV, SZC, INV) set status flags on real hardware. The other bitwise pseudos (SOC, SZC, XOR, ANDI, ORI) were correctly inside a `let Defs = [ST]` block (lines 1123-1338), but ANDrr was in a separate `let isPseudo = 1` block that omitted the ST clobber annotation.
+
+**Fix**: Added `let Defs = [ST] in` before the ANDrr definition.
+
+**Verification**: 82/82 CodeGen lit tests, 16/16 MC tests, 14/14 benchmarks at O2 pass.
+
+---
+
+## 2026-02-10 FIX long_torture fold32 inlining bug resolved (via Bug 9)
+
+**What**: The long_torture benchmark's `fold32` function can now be safely inlined at O2. Previously, inlining fold32 caused a 0x8000 single-bit checksum error, worked around with `__attribute__((noinline))`. The root cause was the missing `Defs = [ST]` on ANDrr (Bug 9).
+
+**Where**: `tests/benchmarks/long_torture.c` (removed `__attribute__((noinline))` from fold32)
+
+**Why**: When fold32 is inlined across 30 call sites, `val & 0xFFFF` generates ANDrr instructions at the i16 level. With 30 inlined fold32 calls producing 60 XOR operations, the scheduler had many opportunities to move ANDrr between compares and branches, corrupting status flags and causing one test case to produce a sign-bit error.
+
+**Technical notes**: After the Bug 9 fix, all 42/42 benchmarks pass across O0/O1/O2 with fold32 inlined. The noinline workaround is no longer needed.
+
+---
+
+## 2026-02-10 DISCOVERY test_3 O1+ bug reclassified as middle-end SimplifyCFG issue
+
+**What**: The Csmith test_3 O1+ miscompilation (O0=FA24:1ADF correct, O1/O2=1A77:C269 wrong) was previously believed to be a backend codegen bug. Investigation proved it is a middle-end IR optimization bug.
+
+**Where**: Analysis files saved in `tests/stress/csmith/build/test_3_before.ll` and `test_3_after.ll`
+
+**Why**: Key evidence:
+- O0 IR compiled through `llc -O0` = FA24:1ADF (CORRECT)
+- O1 IR compiled through `llc -O0` = 1A77:C269 (WRONG)
+- This proves the O1 IR itself is already incorrect -- the backend is not at fault.
+
+**Technical notes**:
+- Used `-mllvm -opt-bisect-limit=N` binary search to narrow down:
+  - limit=37 (LowerExpectIntrinsic on func_13): CORRECT
+  - limit=38 (SimplifyCFGPass on func_13): WRONG
+- SimplifyCFGPass performs three transformations on func_13:
+  1. Short-circuit optimization: converts two sequential `br i1` into `select i1 %cond1, i1 %cond2, i1 false`
+  2. Switch-to-branch: simplifies two-case switch to linear code
+  3. Single-case switch to `icmp eq + br`
+- All three transformations appear semantically correct on inspection
+- May be related to TMS9900's 16-bit `int` causing different behavior in safe_math overflow checks (INT16_MAX >= INT_MAX is true on TMS9900), or an interaction between SimplifyCFG and the TMS9900 DataLayout
+- Deferred as a potential upstream LLVM issue or DataLayout/TargetInfo configuration issue
+- The ANDrr `Defs = [ST]` fix does NOT affect this bug (verified)
+
+---
+
+## 2026-02-10 INVESTIGATION Deep IR analysis of SimplifyCFG test_3 bug (Bug 2)
+
+**What**: Exhaustive line-by-line IR comparison of the before/after SimplifyCFGPass output for func_13 in Csmith test_3. The function shrinks from 1272 lines to 893 lines. Seven distinct transformations identified and analyzed.
+
+**Where**: `tests/stress/csmith/build/test_3_before.ll` (limit=37) and `test_3_after.ll` (limit=38)
+
+**Transformations found** (all individually semantically correct):
+
+1. **Block merging in loops**: Three nested initialization loops have body+increment blocks merged into single blocks. Standard SimplifyCFG optimization.
+
+2. **Short-circuit OR to select** (C line 166: `g_4 || (l_26 != &g_8)`):
+   - Before: `load volatile @g_4; icmp; br -> load %4; icmp; br -> phi i1`
+   - After: `load volatile @g_4; icmp; load %4; icmp; select i1 %cond, i1 true, i1 %other`
+   - The non-volatile load of `%4` is speculated. TBAA metadata `!25` lost on speculated load.
+
+3. **Short-circuit AND to select** (C line 184: `safe_lshift(...) && g_10`):
+   - Before: `call safe_lshift; icmp; br -> load @g_10; icmp; br`
+   - After: `call safe_lshift; icmp; load @g_10; icmp; select i1 %cond, i1 %other, i1 false`
+   - The load of `@g_10` is speculated after the call (still sequenced after it). TBAA metadata `!3` lost.
+
+4. **Dead phi folding**: `phi i1 [ true, %322 ], [ true, %326 ]` -> `zext i1 true to i16`. Always-true phi correctly simplified.
+
+5. **Dead branch removal**: `br i1 true, label %337, label %378` eliminated. Block 378 (dead else branch with ~260 lines of dead code) removed. Correct.
+
+6. **Inner switch elimination**: `switch i32 %val, unreachable [i32 0, %a; i32 22, %b]` where both %a and %b reach the same block -> unconditional branch. Correct.
+
+7. **Outer switch to icmp**: `switch i32 %val, %default [i32 0, %case0]` -> `icmp eq + br`. Default and non-zero both go to cleanup. Correct.
+
+**Key finding**: The most suspicious transformation is #3 (AND to select). The `select i1 %220, i1 %222, i1 false` pattern requires the i1 result of `icmp ne i32 @g_10, 0` to be type-legalized from i1 to i16 and used in a SELECT expansion chain. On TMS9900:
+- `ISD::SELECT` for i16 -> Expand -> SELECT_CC
+- `ISD::SELECT_CC` for i16 -> Custom -> SELECT16 pseudo
+- SELECT16 -> EmitInstrWithCustomInserter -> CMPBR + branch + PHI
+- Meanwhile, `ISD::SETCC` for i16 -> Custom -> returns 0xFFFF/-1 for true, 0 for false
+- The i1-to-i16 promotion should insert AND-with-1, but if this masking step is missing or mis-ordered, the 0xFFFF could propagate incorrectly through the select chain.
+
+**Conclusion**: The SimplifyCFGPass transforms are individually correct at the IR semantic level. The bug is most likely a **backend type legalization issue** where the `select i1, i1, i1` pattern, after i1-to-i16 promotion, interacts incorrectly with the TMS9900 SETCC/SELECT lowering chain. The branch-based IR in the "before" version avoids this codepath entirely because `br i1` directly uses BRCOND which has a simpler lowering than SELECT.
+
+**Next steps**: C-Reduce test_3.c, then trace `select i1` through `llc -O0 -debug` to pinpoint the legalization bug.
+
+---
+
+## 2026-02-10 FIX Backend crash: member initialization order in TMS9900Subtarget
+
+**What**: Fixed intermittent SIGSEGV in `computeRegisterProperties` / `findRepresentativeClass` that crashed clang when compiling any code that included libc++ headers. Crash address was random (ASLR-dependent), manifesting as NULL or garbage function pointer dereference.
+
+**Where**: `llvm-project/llvm/lib/Target/TMS9900/TMS9900Subtarget.h` (member declaration order), `TMS9900Subtarget.cpp` (constructor initializer list)
+
+**Why**: C++ members initialize in declaration order. `TLInfo` (TMS9900TargetLowering) was declared before `RegInfo` (TMS9900RegisterInfo), but `TLInfo`'s constructor calls `STI.getRegisterInfo()` which returns `&RegInfo` — an uninitialized object with a corrupt vtable. Fix: moved `RegInfo` declaration before `TLInfo`.
+
+**Technical notes**: The bug was latent since project inception but only manifested with libc++ headers because the larger AST / heap activity changed memory layout enough to make the uninitialized vtable pointer reliably point to unmapped memory. Simpler C files happened to have heap residue that looked like valid vtable entries. Classic undefined behavior.
+
+## 2026-02-10 DONE Phase 6: libc++ STL header-only bringup
+
+**What**: Brought up libc++ `<array>` and `<algorithm>` (std::sort) on TMS9900 freestanding. Three issues fixed: (1) backend crash above, (2) 16-bit hash specialization, (3) sort extern template linkage.
+
+**Where**:
+- `llvm-project/libcxx/include/__functional/hash.h` — added `__murmur2_or_cityhash<_Size, 16>` specialization using FNV-1a
+- `llvm-project/libcxx/include/__algorithm/sort.h` — guarded `extern template` declarations and `__sort_is_specialized_in_library` behind `_LIBCPP_DISABLE_EXTERN_TEMPLATE`
+- `tests/benchmarks/libcxx_config/time.h` — new stub for `time_t`, `clock_t`, `struct tm`
+- `tests/benchmarks/Makefile` — added `STL_BENCHMARKS`, `STLFLAGS`, stl_test build rules
+- `tests/benchmarks/run_benchmarks.py` — added `cpp_test` and `stl_test` to benchmark list
+
+**Why**: libc++ hash.h only had 32-bit and 64-bit murmur2/cityhash specializations; TMS9900 has 16-bit `size_t`. Sort used `extern template` for common types (int, unsigned, etc.) expecting definitions in libc++.so which doesn't exist freestanding.
+
+**Technical notes**:
+- 16-bit hash uses FNV-1a (offset basis 0x811D, prime 0x0193) — simple byte-at-a-time, appropriate for 16-bit targets
+- Sort fix makes `__sort_is_specialized_in_library` yield `false_type` when `_LIBCPP_DISABLE_EXTERN_TEMPLATE` is defined, forcing inline `__introsort` path
+- stl_test: std::array + std::sort on 8 elements, 3526B at O2, 341 instructions, 6156 cycles
+- **48/48 benchmarks pass** (16 programs x 3 opt levels), 98/98 lit tests pass
+
+---
+
+## 2026-02-10 DONE C++ feature stress testing — 26 tests, zero new bugs
+
+**What**: Launched 3 parallel autonomous agents to stress-test C++ language features beyond STL. Created lambda_test.cpp (8 tests), mi_test.cpp (8 tests), cpp_adv_test.cpp (10 tests). All 26 features pass at O0/O1/O2. Zero new backend bugs found.
+
+**Where**:
+- `tests/benchmarks/lambda_test.cpp` — lambdas: stateless, capture by value/reference, mutable, fn ptr conversion, with std::sort, capturing this, nested
+- `tests/benchmarks/mi_test.cpp` — multiple inheritance: simple MI, this-pointer adjustment, diamond (non-virtual), virtual inheritance, deep hierarchy (4 levels), override both bases, data layout, static_cast up/downcast
+- `tests/benchmarks/cpp_adv_test.cpp` — move ctor/assign, std::move, rule of five, perfect forwarding, variadic templates, structured bindings, constexpr, enum class, static local init
+- `tests/benchmarks/Makefile` — added CPP_FEATURE_BENCHMARKS with compile/link rules
+- `tests/benchmarks/run_benchmarks.py` — added lambda_test, mi_test, cpp_adv_test to ALL_BENCHMARKS and IDLE_HALT
+
+**Why**: After STL bringup (Phases 10-11), tested deeper C++ features to verify backend correctness for vtable thunks, this-pointer adjustments, move semantics, template instantiation, and other patterns that stress register allocation and calling conventions.
+
+**Technical notes**:
+- MI test verified non-virtual thunks (DECT R0 for -2, AI R0,0xFFFC for -4, AI R0,0xFFFA for -6), virtual inheritance vcall offset thunks, and diamond inheritance
+- Anti-devirtualization via `escape()` template with inline asm ensures 25+ indirect vtable calls at all opt levels
+- **60/60 benchmarks pass** (20 programs x 3 opt levels), 98/98 lit tests pass
+- Binary sizes at O2: lambda_test 2886B, mi_test 1706B, cpp_adv_test 1090B
+
+---
+
+*Project Journal - Last Updated: February 10, 2026*

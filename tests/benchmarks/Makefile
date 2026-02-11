@@ -22,6 +22,12 @@ endif
 CFLAGS   = $(TARGET) -O$(OPT) -ffreestanding -fno-builtin -nostdlib $(EXTRA_CFLAGS)
 LDFLAGS  = -T bench.ld
 
+# C++ flags (freestanding, no exceptions/RTTI)
+CXXFLAGS = $(TARGET) -O$(OPT) -ffreestanding -fno-builtin -nostdlib -fno-exceptions -fno-rtti -fno-threadsafe-statics -nostdinc++ $(EXTRA_CFLAGS)
+
+# C++ flags with libc++ STL headers (header-only freestanding subset)
+STLFLAGS = $(CXXFLAGS) -isystem libcxx_config -isystem $(ROOT)/llvm-project/libcxx/include
+
 # Softfloat/runtime always compiled at -O2 (matches real-world precompiled library)
 SF_CFLAGS = $(TARGET) -O2 -ffreestanding -fno-builtin -nostdlib
 
@@ -52,7 +58,16 @@ FLOAT_BENCHMARKS = float_torture
 # Benchmarks needing builtins (memcmp, popcount, bswap, clz, ctz)
 BITOP_BENCHMARKS = bitops_torture
 
-ALL_BENCHMARKS = $(BASIC_BENCHMARKS) $(STRING_BENCHMARKS) $(FLOAT_BENCHMARKS) $(BITOP_BENCHMARKS)
+# C++ benchmarks
+CPP_BENCHMARKS = cpp_test
+
+# C++ feature test benchmarks (need cxxrt + builtins)
+CPP_FEATURE_BENCHMARKS = lambda_test mi_test cpp_adv_test
+
+# C++ STL benchmarks (libc++ header-only)
+STL_BENCHMARKS = stl_test stl_util_test
+
+ALL_BENCHMARKS = $(BASIC_BENCHMARKS) $(STRING_BENCHMARKS) $(FLOAT_BENCHMARKS) $(BITOP_BENCHMARKS) $(CPP_BENCHMARKS) $(CPP_FEATURE_BENCHMARKS) $(STL_BENCHMARKS)
 
 # Default: build all
 all: $(ALL_BENCHMARKS:%=$(BUILD)/%.bin)
@@ -67,6 +82,10 @@ $(BUILD)/bench_start.o: bench_start.s | $(BUILD)
 # Pattern rule: compile benchmark C -> .o
 $(BUILD)/%.o: %.c | $(BUILD)
 	$(CC) $(CFLAGS) -c -o $@ $<
+
+# Pattern rule: compile C++ -> .o
+$(BUILD)/%.o: %.cpp | $(BUILD)
+	$(CC) $(CXXFLAGS) -c -o $@ $<
 
 # Softfloat objects (always -O2 — runtime library is precompiled)
 $(BUILD)/sf_%.o: $(SOFTFLOAT_DIR)/%.c | $(BUILD)
@@ -96,11 +115,42 @@ $(BUILD)/bitops_torture.elf: $(BUILD)/bench_start.o $(BUILD)/bitops_torture.o $(
 $(BUILD)/float_torture.elf: $(BUILD)/bench_start.o $(BUILD)/float_torture.o $(BUILD)/fp32_builtins.o $(SOFTFLOAT_OBJS) $(BUILTINS) | $(BUILD)
 	$(LD) $(LDFLAGS) -o $@ $^
 
+# C++ benchmarks: need cxxrt + builtins
+$(BUILD)/cpp_test.elf: $(BUILD)/bench_start.o $(BUILD)/cpp_test.o $(BUILD)/cxxrt.o $(BUILTINS) | $(BUILD)
+	$(LD) $(LDFLAGS) -o $@ $^
+
+# STL tests: compile with libc++ headers
+$(BUILD)/stl_test.o: stl_test.cpp | $(BUILD)
+	$(CC) $(STLFLAGS) -c -o $@ $<
+
+$(BUILD)/stl_util_test.o: stl_util_test.cpp | $(BUILD)
+	$(CC) $(STLFLAGS) -c -o $@ $<
+
+# C++ feature tests: compile with appropriate flags
+$(BUILD)/lambda_test.o: lambda_test.cpp | $(BUILD)
+	$(CC) $(STLFLAGS) -c -o $@ $<
+
+$(BUILD)/cpp_adv_test.o: cpp_adv_test.cpp | $(BUILD)
+	$(CC) $(STLFLAGS) -c -o $@ $<
+
+# C++ feature test benchmarks: need cxxrt + builtins
+$(BUILD)/lambda_test.elf $(BUILD)/mi_test.elf $(BUILD)/cpp_adv_test.elf: \
+$(BUILD)/%.elf: $(BUILD)/bench_start.o $(BUILD)/%.o $(BUILD)/cxxrt.o $(BUILTINS) | $(BUILD)
+	$(LD) $(LDFLAGS) -o $@ $^
+
+# STL benchmarks: need cxxrt + builtins
+$(BUILD)/stl_test.elf: $(BUILD)/bench_start.o $(BUILD)/stl_test.o $(BUILD)/cxxrt.o $(BUILTINS) | $(BUILD)
+	$(LD) $(LDFLAGS) -o $@ $^
+
+$(BUILD)/stl_util_test.elf: $(BUILD)/bench_start.o $(BUILD)/stl_util_test.o $(BUILD)/cxxrt.o $(BUILTINS) | $(BUILD)
+	$(LD) $(LDFLAGS) -o $@ $^
+
 # ELF -> binary
 $(BUILD)/%.bin: $(BUILD)/%.elf
 	$(OBJCOPY) -O binary \
 		--only-section=.text \
 		--only-section=.rodata \
+		--only-section=.init_array \
 		--only-section=.data \
 		$< $@
 	@$(SIZE) $<
