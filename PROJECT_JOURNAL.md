@@ -1850,4 +1850,29 @@ llvm-objcopy -O binary program.elf program.bin
 
 ---
 
-*Project Journal - Last Updated: February 10, 2026*
+## 2026-02-11 DONE Rust `#![no_std]` bringup complete
+
+**What**: Built Rust 1.81.0 (LLVM 18) stage 1 with TMS9900 support. Test crate with 5 tests (arithmetic, u8, control flow, loop, array) compiles and runs on emulator: 146B code, 58 steps, 940 cycles.
+
+**Where**:
+- Rust repo: `~/personal/ti99/rust-tms9900/` (Rust 1.81.0, config.toml)
+- Calling convention: `compiler/rustc_target/src/abi/call/tms9900.rs`
+- LLVM registration: `compiler/rustc_llvm/build.rs` (OPTIONAL_COMPONENTS), `compiler/rustc_llvm/src/lib.rs` (init_target!)
+- Target spec: `~/personal/ti99/rust-tms9900/test/tms9900-unknown-none.json`
+- Test crate: `~/personal/ti99/rust-tms9900/test/`
+- LLVM fixes: `TMS9900ISelLowering.cpp` (CanLowerReturn, ROTR/ROTL Expand)
+
+**Why**: Extending TMS9900 backend from C/C++ to Rust. Rust 1.81.0 is the last stable release using LLVM 18.
+
+**Technical notes**:
+- `CanLowerReturn()` added: limits returns to 8 bytes (4×i16 R0-R3), larger types (i128 in compiler_builtins) use sret
+- ROTR/ROTL i16 changed from Legal to Expand: SRC instruction only has constant-count pattern; compiler_builtins needs variable-count rotate
+- Linker must use `ld.lld` directly (`"linker-flavor": "ld"`), NOT clang as driver (avoids GNU-ld flag confusion on macOS)
+- `core::arch::asm!` doesn't work for custom targets — use extern "C" calls to .S files instead
+- `config.toml` (not bootstrap.toml) for Rust 1.81; set `extended = false` to avoid book submodule dependency
+- LLVM targets must include AArch64 for host: `-DLLVM_TARGETS_TO_BUILD="TMS9900;AArch64"`
+- All 98 lit tests pass (rotate.ll updated for Expand codegen), 60/60 C/C++ benchmarks still pass
+
+---
+
+*Project Journal - Last Updated: February 11, 2026*
