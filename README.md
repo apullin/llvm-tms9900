@@ -1,15 +1,25 @@
 # LLVM Backend for TMS9900 CPU
 
-A production-quality LLVM backend for the Texas Instruments TMS9900 — the 16-bit CPU in the TI-99/4A home computer. Compiles C, C++ (with STL), and Rust 🦀 to native TMS9900 machine code.
+A production-quality LLVM backend for the [Texas Instruments TMS9900](https://en.wikipedia.org/wiki/TMS9900) — a unique and long-forgotten 16-bit processor that was surprisingly modern in its architecture, but famously hamstrung in the ill-fated [TI-99/4A](https://en.wikipedia.org/wiki/TI-99/4A) home computer. Compiles C, C++ (with STL), and Rust 🦀 to native TMS9900 machine code.
 
 ## Highlights
 
 - **Full LLVM 18 toolchain** — clang, opt, lld, llvm-objcopy, assembler, and disassembler. No external tools required.
-- **Heavily stress-tested** — 100 Csmith random programs, CoreMark, MiniLZO, sprintf test suite, and 20 hand-written benchmarks (60/60 pass across O0/O1/O2).
+- **Heavily stress-tested** — 100 Csmith random programs, CoreMark, MiniLZO, sprintf test suite, and 20 hand-written benchmarks (60/60 pass across -O0, -O1, -O2, and -Os).
 - **C++ with STL** — freestanding libc++ headers: `vector`, `string`, `tuple`, `optional`, `unique_ptr`, `bitset`, algorithms, and more. Lambdas, multiple inheritance, move semantics, variadic templates all working.
 - **Rust `#![no_std]`** 🦀 — builds with `cargo +tms9900 build -Z build-std=core`. See [Rust Support](#rust-support) below.
+- **FreeRTOS port** — preemptive multitasking with near-zero-cost context switches via the TMS9900's workspace pointer. See [FreeRTOS](#freertos).
 - **Hand-tuned runtime library** — assembly-optimized 32-bit multiply/divide/shift, 64-bit arithmetic, `memcpy`/`memset`/`memmove` exploiting auto-increment addressing, and IEEE 754 soft-float.
 - **picolibc math** — single-precision `libm` (sin, cos, sqrt, exp, log, pow, ...) built from [picolibc](https://github.com/picolibc/picolibc) sources, with a custom compact sinf/cosf (1.2KB vs 7KB+ standard).
+- **GDB/LLDB debugging** — the [tms9900-trace](https://github.com/apullin/tms9900-trace) emulator includes a GDB Remote Serial Protocol stub for interactive debugging with breakpoints, single-stepping, and memory inspection.
+
+## The CPU
+
+The [TMS9900](https://en.wikipedia.org/wiki/TMS9900) (1976) was TI's flagship 16-bit microprocessor. Its most distinctive feature is the *workspace pointer* architecture: instead of fixed hardware registers, the CPU's 16 "registers" are just 32 bytes of RAM pointed to by the Workspace Pointer (WP). A context switch is a single instruction (`BLWP`) that atomically swaps all 16 registers by changing one pointer — no pushing, no popping, no saving.
+
+The chip also has hardware multiply (16×16→32) and divide (32÷16→16), auto-increment addressing, and a bit-addressable I/O bus (CRU). It was genuinely ahead of its time.
+
+For full details, see the [TMS 9900 Microprocessor Data Manual](https://archive.org/details/tms-9900-microprocessor-data-manual-may-76) (1976).
 
 ## Quick Start
 
@@ -52,8 +62,6 @@ llvm-objcopy -O binary program.elf program.bin
 tms9900-trace -l 0x0000 program.bin -n 100000 -S
 ```
 
-Testing is done with [tms9900-trace](https://github.com/apullin/tms9900-trace), a standalone TMS9900 CPU simulator.
-
 ## Repository Structure
 
 ```
@@ -63,6 +71,7 @@ llvm-tms9900/
 │   ├── builtins/                # Runtime intrinsics (32/64-bit ops, memcpy, soft-float)
 │   ├── libm/                    # Math library (picolibc-based, float32)
 │   └── picolibc/                # Embedded C library source
+├── FreeRTOS/                    # FreeRTOS port with TMS9900 workspace-based context switch
 ├── tests/
 │   ├── benchmarks/              # 20 benchmarks (14 C + 6 C++), 60/60 pass
 │   └── stress/                  # Csmith, CoreMark, MiniLZO, sprintf
@@ -124,6 +133,64 @@ See the [rust-tms9900](https://github.com/apullin/rust-tms9900) repository for t
 
 **Note**: `core::arch::asm!` is not available for custom targets. Use `extern "C"` calls to assembly files instead.
 
+## FreeRTOS
+
+The `FreeRTOS/` directory contains a full FreeRTOS port that exploits the TMS9900's workspace pointer for near-zero-cost context switching.
+
+### Why the TMS9900 is perfect for an RTOS
+
+On most CPUs, a context switch means saving and restoring all registers — typically dozens of push/pop instructions. On the TMS9900, each task owns a permanent 32-byte *workspace* in RAM. Switching tasks means changing a single 16-bit pointer (WP). The entire register file swaps atomically — no copying, no stack gymnastics.
+
+The FreeRTOS port stores each task's workspace at the top of its stack allocation. On context switch, only 4 words are saved (WP, PC, ST, critical nesting counter), then the new task's WP is loaded and execution resumes with all 16 registers already in place.
+
+### Demo programs
+
+**Basic two-task test** (`main.c`): Two equal-priority tasks increment separate memory markers under preemptive time-slicing. Verifies that the scheduler correctly alternates between tasks.
+
+**Queue + event group rendezvous** (`main_queue.c`): A port of an [MSPM0 Rust demo](https://github.com/apullin/freertos-in-rust-mspm0-demo). A manager task generates random work items and pushes them to a queue; three worker tasks consume items and synchronize at a 4-way event-group rendezvous barrier. Exercises queues, event groups, multiple priority levels, and tick-based delays.
+
+```bash
+cd FreeRTOS
+make run          # basic two-task test
+make run-queue    # queue + rendezvous test
+```
+
+## Debugging and Emulation
+
+Development and testing uses [tms9900-trace](https://github.com/apullin/tms9900-trace), a standalone TMS9900 CPU emulator. It was invaluable during compiler development — every backend bug was caught and diagnosed using its cycle-accurate execution traces, memory dumps, and JSON output mode.
+
+### GDB/LLDB remote debugging
+
+The emulator includes a full GDB Remote Serial Protocol (RSP) stub. Connect with GDB or LLDB for interactive debugging:
+
+```bash
+# Start emulator in GDB server mode
+tms9900-trace -l 0x0000 program.bin --gdb
+
+# In another terminal
+lldb
+(lldb) gdb-remote localhost:1234
+(lldb) register read
+(lldb) breakpoint set -a 0x0100
+(lldb) continue
+```
+
+Supports breakpoints, single-stepping, register and memory inspection, and async break (Ctrl-C).
+
+### Tracepoints
+
+Lightweight PC-hit profiling without full instruction trace overhead:
+
+```bash
+tms9900-trace -l 0x0000 program.bin --tracepoint 0x0100 --tracepoint 0x0200 -n 500000 -S
+```
+
+Reports hit counts, first/last cycle timestamps — useful for measuring function call frequency and loop iteration counts.
+
+### DWARF debug info
+
+DWARF emission is not yet implemented. ELF binaries contain symbol tables (function names, globals) which are sufficient for the GDB stub's breakpoint and symbol lookup features. Full source-level debugging with line numbers and variable inspection is a future goal.
+
 ## Runtime Libraries (`libtms9900/`)
 
 ### Compiler Builtins (`builtins/`)
@@ -148,17 +215,7 @@ Single-precision math built from picolibc sources (~21KB at `-Os`):
 
 Custom compact `sinf`/`cosf` implementation: 1.2KB combined (vs 7KB+ from stock picolibc).
 
-## TMS9900 Architecture
-
-The TMS9900 is a 16-bit big-endian microprocessor with a unique workspace-pointer architecture:
-
-- **16 "registers"** are actually words in RAM, pointed to by the Workspace Pointer (WP)
-- **64KB address space**, 16-bit data and instruction words
-- **No hardware stack** — software stack via R10
-- **Hardware multiply** (`MPY`: 16×16→32) and **divide** (`DIV`: 32÷16→16)
-- **Auto-increment addressing**: `MOV *R1+, R3` (source operand only)
-
-### Calling Convention
+## Calling Convention
 
 | Register | Usage |
 |----------|-------|
@@ -173,37 +230,44 @@ Arguments: R1–R9, then stack. Stack grows downward, 4-byte aligned. 32-bit arg
 
 ## Testing
 
-### Benchmark Suite (20 programs)
+### Benchmark Suite
 
-All 60/60 pass (20 programs × 3 optimization levels):
+20 programs (14 C + 6 C++), all passing at every optimization level:
 
-| Benchmark | Description | Code (O2) | Cycles (O2) |
-|-----------|-------------|-----------|-------------|
-| fib | Fibonacci | 282B | 1.5K |
-| bubble_sort | Array sort | 392B | 21.6K |
-| crc32 | CRC-32 hash | 418B | 77.5K |
-| json_parse | JSON tokenizer | 978B | 20.4K |
-| string_torture | String operations | 502B | 11.5K |
-| float_torture | IEEE 754 soft-float | 8.6KB | 1.7K |
-| huffman | Huffman codec | 1.3KB | 523K |
-| long_torture | 30 tests of 32-bit ops | 1.8KB | 19.8K |
-| heap4 | FreeRTOS-style allocator | 2.1KB | 121K |
-| i64_torture | 64-bit arithmetic | 7.1KB | 349K |
-| cpp_test | Ctors, vtables, templates | 510B | 3.0K |
-| lambda_test | Lambda expressions | 2.9KB | 4.0K |
-| mi_test | Multiple inheritance | 1.7KB | 9.6K |
-| stl_test | vector, string | 15.4KB | 30.8K |
-| stl_util_test | tuple, optional, unique_ptr, ... | 1.5KB | 9.1K |
-| *+ 5 more* | | | |
+| Benchmark | Description | -O0 | -O1 | -O2 | -O0 | -O1 | -O2 |
+|-----------|-------------|----:|----:|----:|----:|----:|----:|
+| | | Code | Code | Code | Cycles | Cycles | Cycles |
+| fib | Fibonacci | 184 | 108 | 282 | 7.1K | 2.2K | 1.5K |
+| bubble_sort | Array sort | 440 | 194 | 392 | 117K | 26.9K | 21.6K |
+| deep_recursion | Tail-call recursion | 218 | 108 | 144 | 45.6K | 6.3K | 766 |
+| crc32 | CRC-32 hash | 514 | 220 | 418 | 204K | 111K | 77.5K |
+| q7_8_matmul | Fixed-point matrix multiply | 392 | 134 | 134 | 9.9K | 512 | 512 |
+| json_parse | JSON tokenizer | 2.7K | 1.0K | 978 | 115K | 22.5K | 20.4K |
+| string_torture | String operations | 740 | 500 | 502 | 34.0K | 12.3K | 11.5K |
+| float_torture | IEEE 754 soft-float | 11.4K | 8.6K | 8.6K | 48.0K | 1.7K | 1.7K |
+| bitops_torture | popcount, bswap, clz, ctz | 3.3K | 2.1K | 2.1K | 72.5K | 27.1K | 27.1K |
+| vertex3d | 3D vertex transforms | 1.1K | 424 | 852 | 95.0K | 57.2K | 56.0K |
+| huffman | Huffman codec | 3.6K | 1.4K | 1.3K | 1.86M | 554K | 523K |
+| long_torture | 30 tests of 32-bit ops | 3.3K | 1.8K | 1.8K | 41.2K | 19.8K | 19.8K |
+| heap4 | FreeRTOS-style allocator | 4.2K | 1.8K | 2.1K | 401K | 125K | 121K |
+| i64_torture | 64-bit arithmetic | 9.1K | 7.1K | 7.1K | 374K | 349K | 349K |
+| cpp_test | Ctors, vtables, templates | 2.1K | 510 | 510 | 15.5K | 3.0K | 3.0K |
+| lambda_test | Lambda expressions | 18.9K | 3.1K | 2.9K | 66.5K | 5.9K | 4.0K |
+| mi_test | Multiple inheritance | 7.5K | 1.9K | 1.7K | 63.7K | 9.8K | 9.6K |
+| cpp_adv_test | Move, forwarding, variadic | 4.8K | 1.2K | 1.1K | 92.4K | 16.9K | 17.8K |
+| stl_test | vector, string | 54.1K | 16.5K | 15.4K | 716K | 34.2K | 30.8K |
+| stl_util_test | tuple, optional, unique_ptr | 12.0K | 1.6K | 1.5K | 188K | 10.5K | 9.1K |
+
+Code sizes in bytes. Cycle counts from tms9900-trace emulator.
 
 ### Stress Tests
 
-| Test | Status | Notes |
+| Test | Result | Notes |
 |------|--------|-------|
 | **Csmith** (100 programs) | 100/100 self-consistent | O0=O1=O2 where all complete |
-| **CoreMark** | PASS at O0–Os | ~1.3M cycles at O2 |
-| **MiniLZO** | PASS at O1–Os | Compression + decompression |
-| **sprintf** (35 tests) | 35/35 pass O0–O2 | Variadic functions, formatting |
+| **CoreMark** | O0–Os | ~1.3M cycles at O2 |
+| **MiniLZO** | O1–Os | Lossless compression + decompression round-trip |
+| **sprintf** (35 tests) | 35/35 at O0–O2 | Variadic functions, format strings |
 
 ### LLVM Lit Tests
 
@@ -239,13 +303,15 @@ make banner.rpk    # MAME cartridge
 
 ## Exotic TODOs
 
-- **Workspace-aware compilation** — The TMS9900's workspace pointer architecture means a context switch (`BLWP`) swaps all 16 registers atomically via a pointer change. A workspace-aware compiler could allocate "hot" variables directly in the workspace for ISR-heavy or coroutine-style code, avoiding save/restore overhead entirely.
-- **Debug info / DWARF** — Not yet implemented.
+- **Workspace-aware compilation** — The TMS9900's workspace pointer architecture means a context switch (`BLWP`) swaps all 16 registers atomically by changing one pointer. A workspace-aware compiler could allocate "hot" variables directly in the workspace for ISR-heavy or coroutine-style code, avoiding save/restore overhead entirely. This is architecturally unique to the TMS9900 family and has no equivalent in modern compiler backends.
+- **Migrate to LLVM latest** — The backend currently targets LLVM 18. Porting to the LLVM main branch would unlock newer optimization passes and keep pace with upstream improvements.
+- **Full DWARF debug info** — Source-level debugging with line numbers and variable inspection.
 - **CRU-aware register allocation** — Reserve R12 only when CRU I/O instructions are used (currently opt-in via `-mattr=+reserve-cru`).
 
 ## Resources
 
-- [tms9900-trace](https://github.com/apullin/tms9900-trace) — TMS9900 CPU emulator for testing
+- [TMS 9900 Microprocessor Data Manual](https://archive.org/details/tms-9900-microprocessor-data-manual-may-76) (1976) — the definitive reference
+- [tms9900-trace](https://github.com/apullin/tms9900-trace) — TMS9900 CPU emulator with GDB stub
 - [xdt99](https://github.com/endlos99/xdt99) — Cross-development tools for TI-99/4A
 - [PROJECT_JOURNAL.md](PROJECT_JOURNAL.md) — Detailed development log
 
