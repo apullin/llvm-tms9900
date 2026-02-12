@@ -1,373 +1,254 @@
 # LLVM Backend for TMS9900 CPU
 
-This project implements an LLVM backend for the Texas Instruments TMS9900
-microprocessor, the CPU used in the TI-99/4A home computer.
+A production-quality LLVM backend for the Texas Instruments TMS9900 — the 16-bit CPU in the TI-99/4A home computer. Compiles C, C++ (with STL), and Rust 🦀 to native TMS9900 machine code.
 
-## Repository Structure
+## Highlights
 
-This project uses an LLVM fork as a submodule:
+- **Full LLVM 18 toolchain** — clang, opt, lld, llvm-objcopy, assembler, and disassembler. No external tools required.
+- **Heavily stress-tested** — 100 Csmith random programs, CoreMark, MiniLZO, sprintf test suite, and 20 hand-written benchmarks (60/60 pass across O0/O1/O2).
+- **C++ with STL** — freestanding libc++ headers: `vector`, `string`, `tuple`, `optional`, `unique_ptr`, `bitset`, algorithms, and more. Lambdas, multiple inheritance, move semantics, variadic templates all working.
+- **Rust `#![no_std]`** 🦀 — builds with `cargo +tms9900 build -Z build-std=core`. See [Rust Support](#rust-support) below.
+- **Hand-tuned runtime library** — assembly-optimized 32-bit multiply/divide/shift, 64-bit arithmetic, `memcpy`/`memset`/`memmove` exploiting auto-increment addressing, and IEEE 754 soft-float.
+- **picolibc math** — single-precision `libm` (sin, cos, sqrt, exp, log, pow, ...) built from [picolibc](https://github.com/picolibc/picolibc) sources, with a custom compact sinf/cosf (1.2KB vs 7KB+ standard).
 
-**LLVM Fork** ([github.com/apullin/llvm-project](https://github.com/apullin/llvm-project), branch `tms9900`):
-- The TMS9900 backend inside LLVM 18
-- Clang driver support for `--target=tms9900`
+## Quick Start
 
-**Tools Repository** (this repo - [github.com/apullin/llvm-tms9900](https://github.com/apullin/llvm-tms9900)):
-```
-llvm-tms9900/
-├── README.md                    # This file
-├── PROJECT_JOURNAL.md           # Detailed implementation notes
-├── llvm2xas99.py                # LLVM asm → xas99 format converter
-├── libtms9900/                  # Runtime libraries
-│   ├── builtins/                # Compiler intrinsics (32-bit ops, soft-float)
-│   ├── libm/                    # Math library (sinf, sqrtf, etc.)
-│   └── picolibc/                # Embedded C library source
-├── runtime/
-│   └── tms9900_rt.asm           # Legacy 32-bit math (use libtms9900 instead)
-├── startup/
-│   └── startup.asm              # Bare-metal startup template
-├── tests/                       # LLVM IR test cases
-└── tms9900_reference.txt        # Quick instruction reference
-```
-
-The `llvm-project` directory is a git submodule pinned to the `tms9900` branch.
-
-## TMS9900 Architecture Summary
-
-The TMS9900 is a 16-bit microprocessor with unique characteristics:
-
-- **Workspace Pointer Architecture**: Instead of hardware registers, the TMS9900
-  uses 16 words in RAM (pointed to by the Workspace Pointer) as its "registers"
-- **16-bit data and instruction words**
-- **Big-endian byte ordering**
-- **64KB address space**
-- **No hardware stack** - implemented in software using R10
-
-### Register Model
-
-| Register | Usage |
-|----------|-------|
-| R0       | Return value |
-| R1-R9    | Arguments (first 9 words), caller-saved |
-| R10      | Stack Pointer (SP) |
-| R11      | Link Register (return address, set by BL) |
-| R12      | CRU Base Address / scratch |
-| R13-R15  | Callee-saved |
-
-### Calling Convention
-
-- **Arguments**: R1-R9 (first 9 words), then stack
-- **Return value**: R0 (16-bit), R0:R1 (32-bit, high:low)
-- **32-bit arguments**: Use register pairs (R1:R2, R3:R4, etc.)
-- **Stack**: Grows downward, 2-byte aligned
-  - Push: `DECT R10` then `MOV Rx,*R10`
-  - Pop: `MOV *R10+,Rx`
-
-## Building
-
-### 1. Clone and init submodules
+### Build the toolchain
 
 ```bash
 git clone git@github.com:apullin/llvm-tms9900.git
 cd llvm-tms9900
 git submodule update --init --recursive
-```
 
-### 2. Build LLVM with TMS9900 Backend
-
-```bash
 cd llvm-project
 mkdir build && cd build
 cmake -G Ninja \
   -DLLVM_TARGETS_TO_BUILD="TMS9900" \
-  -DLLVM_ENABLE_PROJECTS="clang" \
+  -DLLVM_ENABLE_PROJECTS="clang;lld" \
   -DCMAKE_BUILD_TYPE=Release \
   ../llvm
-ninja clang llc
+ninja
 ```
 
-## Examples
-
-This repo ships a few small TI-99/4A cartridge examples under `cart_example/`:
-
-- `cart_example/banner.c`: text banner demo
-- `cart_example/ball.c`: simple bouncing ball
-- `cart_example/ball2.c`: bouncing ball with border hit effects
-- `cart_example/life.c`: Game of Life (Graphics II, per-pixel)
-- `cart_example/life2x.c`: Game of Life (2x pixels, keyboard controls, dirty-tile tracing)
-- `cart_example/kb_test.c`: keyboard scan test (KSCAN)
-- `cart_example/irq_test.c`: VDP interrupt counter test
-
-Build ROM images and js99er cartridge copies (plus MAME `.rpk` and EA5 `.img`):
+### Compile and link
 
 ```bash
-cd cart_example
-make banner.bin banner.cart banner.rpk
-make life2x.img
-```
+# Compile C to object file
+clang --target=tms9900 -O2 -c main.c -o main.o
 
-## Toolchain Overview
-
-The backend supports **direct machine code emission** - no external assembler required:
-
-```
-┌─────────┐    ┌─────────┐    ┌─────────────┐    ┌─────────┐    ┌──────────────┐
-│  C/.S   │───▶│  clang  │───▶│  ELF object │───▶│  ld.lld │───▶│   objcopy    │───▶ Binary
-│  code   │    │  -c     │    │    (.o)     │    │         │    │  -O binary   │
-└─────────┘    └─────────┘    └─────────────┘    └─────────┘    └──────────────┘
-```
-
-**Direct Object Workflow** (recommended):
-```bash
-# Compile C to ELF object file
-clang --target=tms9900 -c main.c -o main.o
-
-# Assemble .S files directly (no external assembler needed!)
+# Assemble startup code
 clang --target=tms9900 -c startup.S -o startup.o
 
 # Link with LLD
 ld.lld -T linker.ld startup.o main.o -o program.elf
 
-# Extract raw binary for loading into TMS9900 memory
+# Extract raw binary
 llvm-objcopy -O binary program.elf program.bin
 ```
 
-**Legacy Assembly Workflow** (still supported):
-For integration with existing xas99-based projects, you can still generate assembly:
-
-```
-┌─────────┐    ┌─────────┐    ┌─────────────┐    ┌─────────┐    ┌──────────┐
-│  C code │───▶│  clang  │───▶│ LLVM generic│───▶│llvm2xas99│───▶│  xas99   │───▶ Binary
-│ (.c)    │    │  -S     │    │  asm (.s)   │    │  (.py)  │    │  (.py)   │
-└─────────┘    └─────────┘    └─────────────┘    └─────────┘    └──────────┘
-```
-
-The `llvm2xas99.py` script converts LLVM's assembly output to xas99-compatible format. **This is now vestigial** - retained for compatibility with existing workflows, but new projects should use direct object emission.
-
-### xas99 Dialect (Native Support)
-
-The LLVM backend now includes native xas99 dialect support, which outputs assembly that xas99 can directly assemble (with minimal filtering):
+### Run on emulator
 
 ```bash
-# Compile with xas99 dialect
-clang --target=tms9900 -O2 -S -fno-addrsig \
-      -mllvm -tms9900-asm-dialect=xas99 test.c -o test.s
-
-# Filter remaining LLVM directives and assemble
-grep -v '^\s*\.' test.s > test_clean.s
-xas99.py -R test_clean.s -b -o test.bin
+tms9900-trace -l 0x0000 program.bin -n 100000 -S
 ```
 
-The xas99 dialect:
-- Outputs hex immediates as `>XXXX` format (e.g., `LI R0,>1234`)
-- Outputs negative values as two's complement (e.g., `>FFFF` for -1)
-- Uses `DEF` for symbol exports
-- Uses `BSS` for zero-filled data (not `.zero`)
-- Requires `-fno-addrsig` to suppress LLVM's address significance table
+Testing is done with [tms9900-trace](https://github.com/apullin/tms9900-trace), a standalone TMS9900 CPU simulator.
 
-**Quirk:** LLVM's MC layer always emits `.text`, `.data`, `.bss`, and `.p2align` directives when switching sections or aligning data. These are deeply embedded in LLVM's machine code infrastructure and cannot be suppressed without writing a custom MCStreamer. The simple workaround is to filter them out:
+## Repository Structure
+
+```
+llvm-tms9900/
+├── llvm-project/                # LLVM 18 fork (submodule, branch: tms9900)
+├── libtms9900/
+│   ├── builtins/                # Runtime intrinsics (32/64-bit ops, memcpy, soft-float)
+│   ├── libm/                    # Math library (picolibc-based, float32)
+│   └── picolibc/                # Embedded C library source
+├── tests/
+│   ├── benchmarks/              # 20 benchmarks (14 C + 6 C++), 60/60 pass
+│   └── stress/                  # Csmith, CoreMark, MiniLZO, sprintf
+├── cart_example/                # TI-99/4A cartridge demos (Game of Life, etc.)
+├── llvm2xas99.py                # LLVM asm → xas99 format converter (legacy)
+└── PROJECT_JOURNAL.md           # Detailed development log
+```
+
+## Toolchain
+
+The backend produces ELF object files directly — no external assembler needed:
+
+```
+ .c / .S  ──▶  clang -c  ──▶  .o (ELF)  ──▶  ld.lld  ──▶  llvm-objcopy  ──▶  .bin
+```
+
+All standard LLVM tools work: `opt` for IR optimization, `llc` for code generation, `llvm-objdump` for disassembly, `llvm-size` for section sizes.
+
+## Language Support
+
+### C
+
+Full C11 support in freestanding mode (`-ffreestanding`). All integer sizes through 64-bit, IEEE 754 soft-float, `switch` via jump tables, inline assembly, interrupt handlers, naked functions.
+
+### C++ with STL
+
+Freestanding C++ with header-only libc++ from the LLVM tree:
 
 ```bash
-grep -v '^\s*\.' test.s > test_clean.s
+clang --target=tms9900 -O2 -ffreestanding -fno-exceptions -fno-rtti \
+  -fno-threadsafe-statics -nostdinc++ \
+  -isystem libcxx_config -isystem llvm-project/libcxx/include \
+  -c program.cpp -o program.o
 ```
 
-This is a known limitation of LLVM's MC layer. For assembly output, use `grep -v` to filter, or use the direct object workflow which bypasses assembly text entirely.
+**Working STL containers and utilities**: `vector`, `string`, `pair`, `tuple`, `optional`, `string_view`, `unique_ptr`, `initializer_list`, `bitset`, `numeric_limits`, `array`, and algorithms (`find`, `count`, `reverse`, `min`, `max`, `sort`).
 
-For more complex projects or if you need additional transformations, the `llvm2xas99.py` script provides more comprehensive conversion.
+**Working language features**: lambdas (all capture modes), multiple inheritance with virtual dispatch, move semantics, perfect forwarding, variadic templates, structured bindings, `constexpr`, `enum class`, static local init.
 
-### Assembly Input (AsmParser)
+A minimal C++ runtime (`cxxrt.cpp`) provides `operator new`/`delete` and `__cxa_*` stubs. See `tests/benchmarks/` for examples.
 
-The backend includes a full assembly parser, enabling direct assembly of `.S` files:
+### Rust Support
+
+Rust `#![no_std]` cross-compilation is supported via a custom Rust 1.81.0 build. 🦀
+
+**Setup** (one-time):
+
+1. Clone Rust 1.81.0 into a separate directory and apply TMS9900 patches (calling convention, LLVM component registration)
+2. Build stage 1: `python3 x.py build --stage 1 library`
+3. Register toolchain: `rustup toolchain link tms9900 build/<host>/stage1`
+
+**Build a Rust program**:
 
 ```bash
-# Assemble TMS9900 assembly to object file
-clang --target=tms9900 -c program.S -o program.o
+cargo +tms9900 build -Z build-std=core --target tms9900-unknown-none.json
 ```
 
-**Supported syntax styles:**
+See the [rust-tms9900](https://github.com/apullin/rust-tms9900) repository for the patched Rust fork, target spec, and examples.
+
+**Note**: `core::arch::asm!` is not available for custom targets. Use `extern "C"` calls to assembly files instead.
+
+## Runtime Libraries (`libtms9900/`)
+
+### Compiler Builtins (`builtins/`)
+
+Hand-coded TMS9900 assembly for performance-critical operations:
+
+| Category | Functions |
+|----------|-----------|
+| 32-bit integer | `__mulsi3`, `__divsi3`, `__udivsi3`, `__modsi3`, `__umodsi3` |
+| 32-bit shifts | `__ashlsi3`, `__lshrsi3`, `__ashrsi3` |
+| 64-bit integer | `__muldi3`, `__divdi3`, `__udivdi3`, `__moddi3`, `__umoddi3`, `__udivmoddi4` |
+| Memory | `memcpy`, `memset`, `memmove` (auto-increment optimized) |
+| Soft-float | `__addsf3`, `__subsf3`, `__mulsf3`, `__divsf3`, comparisons, conversions |
+
+The 32-bit division includes a hardware `DIV` fast path for 16-bit divisors. Memory routines exploit the TMS9900's `*R+` auto-increment addressing mode.
+
+### Math Library (`libm/`)
+
+Single-precision math built from picolibc sources (~21KB at `-Os`):
+
+`sinf`, `cosf`, `tanf`, `asinf`, `acosf`, `atanf`, `atan2f`, `sinhf`, `coshf`, `tanhf`, `expf`, `logf`, `log10f`, `log2f`, `powf`, `sqrtf`, `fabsf`, `fmodf`, `ceilf`, `floorf`, `roundf`, `scalbnf`, `copysignf`, `ldexpf`, `frexpf`
+
+Custom compact `sinf`/`cosf` implementation: 1.2KB combined (vs 7KB+ from stock picolibc).
+
+## TMS9900 Architecture
+
+The TMS9900 is a 16-bit big-endian microprocessor with a unique workspace-pointer architecture:
+
+- **16 "registers"** are actually words in RAM, pointed to by the Workspace Pointer (WP)
+- **64KB address space**, 16-bit data and instruction words
+- **No hardware stack** — software stack via R10
+- **Hardware multiply** (`MPY`: 16×16→32) and **divide** (`DIV`: 32÷16→16)
+- **Auto-increment addressing**: `MOV *R1+, R3` (source operand only)
+
+### Calling Convention
+
+| Register | Usage |
+|----------|-------|
+| R0       | Return value (16-bit), or R0:R1 (32-bit high:low) |
+| R1–R9    | Arguments (first 9 words), caller-saved |
+| R10      | Stack Pointer |
+| R11      | Link Register (return address) |
+| R12      | CRU Base / general purpose |
+| R13–R15  | Callee-saved |
+
+Arguments: R1–R9, then stack. Stack grows downward, 4-byte aligned. 32-bit arguments use register pairs (R1:R2, R3:R4, ...).
+
+## Testing
+
+### Benchmark Suite (20 programs)
+
+All 60/60 pass (20 programs × 3 optimization levels):
+
+| Benchmark | Description | Code (O2) | Cycles (O2) |
+|-----------|-------------|-----------|-------------|
+| fib | Fibonacci | 282B | 1.5K |
+| bubble_sort | Array sort | 392B | 21.6K |
+| crc32 | CRC-32 hash | 418B | 77.5K |
+| json_parse | JSON tokenizer | 978B | 20.4K |
+| string_torture | String operations | 502B | 11.5K |
+| float_torture | IEEE 754 soft-float | 8.6KB | 1.7K |
+| huffman | Huffman codec | 1.3KB | 523K |
+| long_torture | 30 tests of 32-bit ops | 1.8KB | 19.8K |
+| heap4 | FreeRTOS-style allocator | 2.1KB | 121K |
+| i64_torture | 64-bit arithmetic | 7.1KB | 349K |
+| cpp_test | Ctors, vtables, templates | 510B | 3.0K |
+| lambda_test | Lambda expressions | 2.9KB | 4.0K |
+| mi_test | Multiple inheritance | 1.7KB | 9.6K |
+| stl_test | vector, string | 15.4KB | 30.8K |
+| stl_util_test | tuple, optional, unique_ptr, ... | 1.5KB | 9.1K |
+| *+ 5 more* | | | |
+
+### Stress Tests
+
+| Test | Status | Notes |
+|------|--------|-------|
+| **Csmith** (100 programs) | 100/100 self-consistent | O0=O1=O2 where all complete |
+| **CoreMark** | PASS at O0–Os | ~1.3M cycles at O2 |
+| **MiniLZO** | PASS at O1–Os | Compression + decompression |
+| **sprintf** (35 tests) | 35/35 pass O0–O2 | Variadic functions, formatting |
+
+### LLVM Lit Tests
+
+98 tests (82 CodeGen + 16 MC), all passing.
+
+## Assembler
+
+The integrated assembler supports both LLVM and xas99 syntax:
 
 | Feature | LLVM Style | xas99 Style |
 |---------|------------|-------------|
 | Labels | `LABEL:` | `LABEL` (no colon) |
-| Hex immediates | `0x1234` | `>1234` |
+| Hex | `0x1234` | `>1234` |
 | Comments | `#`, `//`, `;` | `;` |
 
-The AsmParser supports xas99-style syntax for **code and data** - the directives you'd use in subroutines and modules that get linked into a larger program. TI-99/4A-specific metadata (cartridge headers, menu entries, absolute placement) should be handled via startup code or external tools.
+**xas99 directives**: `DATA`, `BYTE`, `TEXT`, `BSS`, `DEF`, `REF`, `EQU`, `END`.
 
-**xas99 directives supported:**
-- `DATA >1234,>5678` - 16-bit word data
-- `BYTE >12,>34` - 8-bit byte data
-- `TEXT "string"` - ASCII text
-- `BSS 16` - Reserve zero-filled bytes
-- `DEF SYMBOL` - Export symbol (make global)
-- `REF SYMBOL` - Import external symbol
-- `EQU` - Symbol equate (e.g., `VDPWD EQU >8C00`)
-- `END` - End of source
+**CRU bit-addressing**: `SBO`, `SBZ`, `TB` with symbolic offsets.
 
-**CRU single-bit addressing (SBO/SBZ/TB):**
-The CRU base lives in `R12`, and the instructions take a signed 8-bit bit
-offset relative to that base. It is common to name these offsets with `EQU`
-or labels. The assembler now accepts symbol operands and emits an 8-bit fixup
-so the linker can resolve them.
+## TI-99/4A Cartridge Examples
 
-```asm
-CRU_BASE EQU >1100
-CRU_LED  EQU 5
+The `cart_example/` directory has several demos:
 
-       LI   R12,CRU_BASE
-       SBO  CRU_LED
-```
-
-**Not supported** (use external tools or startup code):
-- `AORG` - Parsed but ignored; use objcopy/linker for address placement
-- `IDT`, `TITL`, `PAGE`, `LIST/UNL` - Listing directives
-- `COPY` - File includes
-- Cartridge headers and TI-99/4A menu metadata
-
-**Example (xas99 style):**
-```asm
-       DEF START
-       REF VDPWD
-
-START  LI R0,>8C00
-       LI R1,>0100
-LOOP   CLR R2
-       INC R1
-       B *R11
-
-MSG    TEXT "HELLO"
-       BYTE >00
-       BSS 8
-       END
-```
-
-Both LLVM and xas99 syntax styles can be mixed and produce identical object files. Symbols are case-insensitive (stored uppercase internally).
-
-## Usage
-
-### Compile C to TMS9900 Assembly
+- **life2x.c** — Game of Life with 2× pixels, keyboard controls, dirty-tile tracing
+- **ball.c / ball2.c** — Bouncing ball demos
+- **banner.c** — Text banner
 
 ```bash
-# Using clang driver (outputs LLVM-style assembly)
-./bin/clang --target=tms9900 -O2 -S hello.c -o hello.s
-
-# Convert to xas99 format
-python3 llvm2xas99.py hello.s > hello.asm
-
-# Assemble and link with xas99 (from xdt99 toolkit)
-xas99.py -R hello.asm -b -o hello.bin
+cd cart_example
+make life2x.img    # EA5 executable
+make banner.rpk    # MAME cartridge
 ```
 
-### Compile LLVM IR Directly
+## Exotic TODOs
 
-```bash
-./bin/llc -march=tms9900 -O2 test.ll -o test.s
-python3 llvm2xas99.py test.s > test.asm
-```
-
-### Using the Runtime Library
-
-For 32-bit operations (multiply, divide, modulo), link with the runtime:
-
-```bash
-# Assemble the runtime
-xas99.py -R runtime/tms9900_rt.asm -o tms9900_rt.o
-
-# Include in your project
-cat your_code.asm runtime/tms9900_rt.asm > combined.asm
-xas99.py -R combined.asm -b -o program.bin
-```
-
-## Current Status
-
-The backend is **functional** and can compile real C programs.
-
-### Completed Features
-
-- All 16-bit integer operations (add, sub, mul, div, mod, shifts, logic)
-- 8-bit operations (promoted to 16-bit internally)
-- 32-bit operations via runtime library calls
-- All addressing modes (register, indirect, indexed, symbolic, auto-increment)
-- Function calls with proper calling convention
-- Local variables and stack frame management
-- Signed and unsigned comparisons with correct branch generation
-- Switch statements via jump tables
-- Inline assembly with register constraints
-- Interrupt handlers (`__attribute__((interrupt))`)
-- Naked functions (`__attribute__((naked))`)
-
-### Runtime Library Functions
-
-| Function | Purpose |
-|----------|---------|
-| `__mulsi3` | 32-bit multiply |
-| `__divsi3` | 32-bit signed divide |
-| `__udivsi3` | 32-bit unsigned divide |
-| `__modsi3` | 32-bit signed modulo |
-| `__umodsi3` | 32-bit unsigned modulo |
-| `__ashlsi3` | 32-bit left shift |
-| `__lshrsi3` | 32-bit logical right shift |
-| `__ashrsi3` | 32-bit arithmetic right shift |
-
-### Not Yet Implemented
-
-- Debug info / DWARF
-- Native linker support (use objcopy for single-file, or link externally)
-
-## libtms9900 - Runtime Libraries
-
-The `libtms9900/` directory provides runtime support libraries:
-
-- **Compiler builtins**: 32-bit integer ops (`__mulsi3`, `__divsi3`, shifts) and IEEE 754 soft-float (`__addsf3`, `__mulsf3`, etc.)
-- **libm**: Math library based on [picolibc](https://github.com/picolibc/picolibc), with size-optimized sin/cos (1.2KB vs 7KB+ standard)
-
-The library uses float32 only (no 64-bit double) to minimize code size. See `libtms9900/README.md` for build instructions, size tables, and implementation details.
-
-## Testing
-
-Development and testing has been done using [tms9900-trace](https://github.com/apullin/tms9900-trace), a standalone TMS9900 CPU simulator derived from ti99sim. This provides bare CPU execution with flat RAM, which is ideal for testing compiler output in isolation.
-
-### Minimum Working Example
-
-The `tests/` directory contains a minimum working example that exercises the compiler:
-
-```bash
-# Run the MWE test (requires xas99 and tms9900-trace)
-./tests/run_mwe_test.sh
-```
-
-The test (`tests/mwe_test.c`) performs:
-1. Dot product of two 5-element arrays → result: 55
-2. Bubble sort on one array
-3. Dot product again (with sorted array) → result: 86
-4. Returns sum (141 = 0x8D)
-
-Expected memory results after execution:
-- `result_dot1` = 0x0037 (55)
-- `result_dot2` = 0x0056 (86)
-- `sorted_array` = {1, 2, 5, 8, 9}
-- `R0` = 0x008D (141)
-
-### Manual Testing
-
-```bash
-# Assemble to binary
-xas99.py -R -b test.asm -o test.bin
-
-# Run through simulator
-tms9900-trace -l 0x8000 -e 0x8000 -w 0x8300 -n 1000 test.bin
-
-# With memory dump
-tms9900-trace -l 0x8000 -e 0x8000 -w 0x8300 -n 1000 -d 0x8000:256 test.bin
-```
-
-**Note:** Full TI-99/4A system testing has not yet been performed. The goal is to support real TI-99/4A programs, but coexistence with the TI-99/4A memory map (GROM, VDP, VRAM, cartridge ROM) is an open question that will be addressed in future project phases.
+- **Workspace-aware compilation** — The TMS9900's workspace pointer architecture means a context switch (`BLWP`) swaps all 16 registers atomically via a pointer change. A workspace-aware compiler could allocate "hot" variables directly in the workspace for ISR-heavy or coroutine-style code, avoiding save/restore overhead entirely.
+- **Debug info / DWARF** — Not yet implemented.
+- **CRU-aware register allocation** — Reserve R12 only when CRU I/O instructions are used (currently opt-in via `-mattr=+reserve-cru`).
 
 ## Resources
 
-- [xdt99 Cross-development tools](https://github.com/endlos99/xdt99)
-- [PROJECT_JOURNAL.md](PROJECT_JOURNAL.md) - Detailed implementation notes
-- [LLVM MSP430 Backend](https://github.com/llvm/llvm-project/tree/main/llvm/lib/Target/MSP430) - Similar 16-bit target
+- [tms9900-trace](https://github.com/apullin/tms9900-trace) — TMS9900 CPU emulator for testing
+- [xdt99](https://github.com/endlos99/xdt99) — Cross-development tools for TI-99/4A
+- [PROJECT_JOURNAL.md](PROJECT_JOURNAL.md) — Detailed development log
 
 ## License
 
-This project follows LLVM's Apache 2.0 license with LLVM Exceptions.
+Apache 2.0 with LLVM Exceptions (follows upstream LLVM licensing).
