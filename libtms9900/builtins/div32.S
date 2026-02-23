@@ -20,6 +20,9 @@
        .global __umodsi3
        .global __divsi3
        .global __modsi3
+       .global UDIV32
+       .global NEG32_01
+       .global NEG32_23
 
 ;----------------------------------------------------------------------
 ; __udivsi3 - Unsigned 32-bit division
