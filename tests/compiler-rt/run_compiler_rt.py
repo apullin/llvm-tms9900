@@ -176,36 +176,9 @@ SKIP_TESTS |= {
     "powisf2_test.c",
 }
 
-# --- Builtins not in our libbuiltins.a (checked/non-overflow variants, bswap, etc.) ---
-SKIP_TESTS |= {
-    # Checked arithmetic (overflow-trapping) - not in libbuiltins.a
-    "absvdi2_test.c", "absvsi2_test.c",
-    "addvdi3_test.c", "addvsi3_test.c",
-    "subvdi3_test.c", "subvsi3_test.c",
-    "mulvdi3_test.c", "mulvsi3_test.c",
-    "negvdi2_test.c", "negvsi2_test.c",
-    "mulodi4_test.c", "mulosi4_test.c",
-
-    # Byte-swap builtins - not in libbuiltins.a
-    "bswapdi2_test.c", "bswapsi2_test.c",
-
-    # Count leading/trailing zeros, find-first-set, parity, popcount (64-bit) - not in libbuiltins.a
-    "clzdi2_test.c",
-    "ctzdi2_test.c", "ctzsi2_test.c",
-    "ffsdi2_test.c", "ffssi2_test.c",
-    "paritydi2_test.c", "paritysi2_test.c",
-    "popcountdi2_test.c", "popcountsi2_test.c",
-
-    # Compare builtins - not in libbuiltins.a
-    "cmpdi2_test.c", "ucmpdi2_test.c",
-
-    # Negate 64-bit - not in libbuiltins.a
-    "negdi2_test.c",
-
-    # divmodsi4 (combined div+mod) - not in libbuiltins.a
-    "divmodsi4_test.c",
-    "udivmodsi4_test.c",
-}
+# --- Builtins formerly not in libbuiltins.a (now added from compiler-rt) ---
+# All 27 builtins below are now compiled from upstream compiler-rt and included
+# in libbuiltins.a. Tests should pass.
 
 # --- Tests that link-error due to __extendsfdf2 (double precision promotion in printf) ---
 # The test source uses %a/%f format specifiers which promote float to double,
@@ -216,16 +189,9 @@ SKIP_TESTS |= {
     "fixunssfsi_test.c",   # calls __extendsfdf2
 }
 
-# --- 64-bit shift ABI mismatch ---
-# compiler-rt tests declare __ashldi3(di_int a, int b) where int=16-bit on TMS9900.
-# Our fp32_builtins.c implements __ashldi3(uint64_t a, int32_t b) with 32-bit shift count.
-# The compiler-generated calls pass shift count in R4 (16-bit), but the C implementation
-# reads R4:R5 (32-bit). This is the documented "32-bit builtin calling convention" issue.
-SKIP_TESTS |= {
-    "ashldi3_test.c",   # __ashldi3 int vs int32_t shift count ABI mismatch
-    "ashrdi3_test.c",   # __ashrdi3 same issue
-    "lshrdi3_test.c",   # __lshrdi3 same issue
-}
+# --- 64-bit shift ABI mismatch (FIXED) ---
+# compiler-rt reference implementations now used in libbuiltins.a with correct
+# 'int b' parameter type. Tests should pass.
 
 # Note: mulsi3_test.c is NOT skipped. si_int = int32_t = long on TMS9900.
 # INT_MAX (0x7FFF) is just a small si_int value. Large constant results
