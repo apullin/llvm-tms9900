@@ -16,8 +16,9 @@ CFLAGS = --target=tms9900 -O2 -fno-builtin -c
 CRT_DIR = ../../llvm-project/compiler-rt/lib/builtins
 CRT_CFLAGS = --target=tms9900 -O2 -ffreestanding -fno-builtin -I$(CRT_DIR) -c
 
-# Assembly source files (32-bit builtins + memops)
-ASM_SRCS = mul32.S div32.S shift32.S memcpy.S memset.S memmove.S
+# Assembly source files (32-bit builtins + memops + bitops)
+ASM_SRCS = mul32.S div32.S shift32.S memcpy.S memset.S memmove.S \
+           bswapsi2.S clzsi2.S ctzsi2.S
 
 # C source files (64-bit builtins)
 I64_SRCS = i64/muldi3.c i64/udivmoddi4.c i64/divdi3.c i64/udivdi3.c \
@@ -33,9 +34,9 @@ CRT_SRCS = absvsi2.c absvdi2.c \
            negvsi2.c negvdi2.c \
            mulvsi3.c mulvdi3.c \
            mulosi4.c mulodi4.c \
-           bswapsi2.c bswapdi2.c \
-           ctzsi2.c ctzdi2.c \
-           clzsi2.c clzdi2.c \
+           bswapdi2.c \
+           ctzdi2.c \
+           clzdi2.c \
            ffssi2.c ffsdi2.c \
            paritysi2.c paritydi2.c \
            popcountsi2.c popcountdi2.c \

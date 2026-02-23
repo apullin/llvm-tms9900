@@ -40,7 +40,7 @@ BUILTINS = $(ROOT)/libtms9900/builtins/build/libbuiltins.a
 SOFTFLOAT_DIR = $(ROOT)/libtms9900/builtins/softfloat
 SOFTFLOAT_SRCS = addsf3.c subsf3.c mulsf3.c divsf3.c negsf2.c \
                  comparesf2.c floatsisf.c floatunsisf.c fixsfsi.c \
-                 fixunssfsi.c clzsi2.c
+                 fixunssfsi.c
 SOFTFLOAT_OBJS = $(SOFTFLOAT_SRCS:%.c=$(BUILD)/sf_%.o)
 
 # Softfloat support (64-bit builtins, FP env stubs)

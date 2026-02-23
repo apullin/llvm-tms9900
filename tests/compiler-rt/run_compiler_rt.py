@@ -43,7 +43,7 @@ SOFTFLOAT_DIR = ROOT / "libtms9900" / "builtins" / "softfloat"
 SOFTFLOAT_SRCS = [
     "addsf3.c", "subsf3.c", "mulsf3.c", "divsf3.c", "negsf2.c",
     "comparesf2.c", "floatsisf.c", "floatunsisf.c", "fixsfsi.c",
-    "fixunssfsi.c", "clzsi2.c",
+    "fixunssfsi.c",
 ]
 FP_BUILTINS_SRC = ROOT / "tests" / "fp32_builtins.c"
 
