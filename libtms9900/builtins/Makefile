@@ -77,4 +77,11 @@ info:
 	@echo "All Objects: $(ALL_OBJS)"
 	@echo "Compiler: $(CC)"
 
-.PHONY: all clean info
+RESOURCE_DIR := $(shell $(CC) --print-resource-dir)
+
+install: $(BUILD)/libbuiltins.a
+	mkdir -p $(RESOURCE_DIR)/lib
+	cp $(BUILD)/libbuiltins.a $(RESOURCE_DIR)/lib/libclang_rt.builtins.a
+	cp $(BUILD)/libbuiltins.a $(RESOURCE_DIR)/lib/libclang_rt.builtins-tms9900.a
+
+.PHONY: all clean info install
