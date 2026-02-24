@@ -4,7 +4,7 @@ A production-quality LLVM backend for the [Texas Instruments TMS9900](https://en
 
 ## Highlights
 
-- **Full LLVM 18 toolchain** — clang, opt, lld, llvm-objcopy, assembler, and disassembler. No external tools required.
+- **Full LLVM 20 toolchain** — clang, opt, lld, llvm-objcopy, assembler, and disassembler. No external tools required.
 - **Heavily stress-tested** — 100 Csmith random programs, CoreMark, MiniLZO, sprintf test suite, and 20 hand-written benchmarks (60/60 pass across -O0, -O1, -O2, and -Os).
 - **C++ with STL** — freestanding libc++ headers: `vector`, `string`, `tuple`, `optional`, `unique_ptr`, `bitset`, algorithms, and more. Lambdas, multiple inheritance, move semantics, variadic templates all working.
 - **Rust `#![no_std]`** 🦀 — builds with `cargo +tms9900 build -Z build-std=core`. See [Rust Support](#rust-support) below.
