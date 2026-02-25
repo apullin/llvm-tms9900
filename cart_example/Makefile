@@ -20,7 +20,7 @@ EA5_LDFLAGS = -T ea5.ld --print-memory-usage
 EA5_BASE = 0xA000
 EA5_MAX_SIZE = 0x6000
 
-PROGRAMS = banner ball ball2 life life2 life2x life2_2x life3_2x kb_test irq_test
+PROGRAMS = banner banner2 ball ball2 life life2 life2x life2_2x life3_2x kb_test irq_test
 EA5_PROGRAMS = $(PROGRAMS)
 
 .PHONY: all clean

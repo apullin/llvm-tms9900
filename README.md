@@ -1,5 +1,9 @@
 # LLVM Backend for TMS9900 CPU
 
+<p align="center">
+  <img src="images/banner.png" alt="LLVM TMS9900 running on TI-99/4A" width="500">
+</p>
+
 A production-quality LLVM backend for the [Texas Instruments TMS9900](https://en.wikipedia.org/wiki/TMS9900) — a unique and long-forgotten 16-bit processor that was surprisingly modern in its architecture, but famously hamstrung in the ill-fated [TI-99/4A](https://en.wikipedia.org/wiki/TI-99/4A) home computer. Compiles C, C++ (with STL), and Rust 🦀 to native TMS9900 machine code.
 
 ## Highlights
