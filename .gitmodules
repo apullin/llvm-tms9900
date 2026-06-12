@@ -6,3 +6,7 @@
 	path = FreeRTOS/FreeRTOS-Kernel
 	url = git@github.com:apullin/FreeRTOS-Kernel.git
 	branch = tms9900
+[submodule "tooling/picojvm"]
+	path = tooling/picojvm
+	url = git@github.com:apullin/picojvm.git
+	branch = tms9900
