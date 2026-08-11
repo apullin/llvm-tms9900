@@ -30,6 +30,15 @@ I64_SRCS = i64/muldi3.c i64/udivmoddi4.c i64/divdi3.c i64/udivdi3.c \
 # C source files: checked multiply (too complex for pure ASM)
 MULCHK_SRCS = mulvdi3.c mulosi4.c
 
+# C source files: IEEE-754 single-precision compiler builtins
+SOFTFLOAT_SRCS = softfloat/addsf3.c softfloat/subsf3.c \
+                 softfloat/mulsf3.c softfloat/divsf3.c \
+                 softfloat/negsf2.c softfloat/comparesf2.c \
+                 softfloat/floatsisf.c softfloat/floatunsisf.c \
+                 softfloat/fixsfsi.c softfloat/fixunssfsi.c \
+                 softfloat/extendhfsf2.c softfloat/truncsfhf2.c \
+                 softfloat/fenv.c
+
 # C source files (runtime support)
 RT_SRCS = malloc.c string_utils.c
 
@@ -38,8 +47,10 @@ ASM_OBJS = $(ASM_SRCS:.S=.o)
 ASM_EXT_OBJS = $(ASM_EXT_SRCS:.S=.o)
 I64_OBJS = $(notdir $(I64_SRCS:.c=.o))
 MULCHK_OBJS = $(MULCHK_SRCS:.c=.o)
+SOFTFLOAT_OBJS = $(notdir $(SOFTFLOAT_SRCS:.c=.o))
 RT_OBJS = $(RT_SRCS:.c=.o)
-ALL_OBJS = $(ASM_OBJS) $(ASM_EXT_OBJS) $(I64_OBJS) $(MULCHK_OBJS) $(RT_OBJS)
+ALL_OBJS = $(ASM_OBJS) $(ASM_EXT_OBJS) $(I64_OBJS) $(MULCHK_OBJS) \
+           $(SOFTFLOAT_OBJS) $(RT_OBJS)
 
 BUILD = build
 
@@ -55,6 +66,10 @@ $(BUILD)/%.o: %.S | $(BUILD)
 
 # Pattern rule for compiling i64 C sources
 $(BUILD)/%.o: i64/%.c | $(BUILD)
+	$(CC) $(CFLAGS) -o $@ $<
+
+# Pattern rule for compiling single-precision soft-float sources
+$(BUILD)/%.o: softfloat/%.c | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $<
 
 # Pattern rule for compiling runtime C sources
@@ -74,6 +89,7 @@ info:
 	@echo "ASM Ext Sources: $(ASM_EXT_SRCS)"
 	@echo "I64 Sources: $(I64_SRCS)"
 	@echo "MulChk Sources: $(MULCHK_SRCS)"
+	@echo "Soft-float Sources: $(SOFTFLOAT_SRCS)"
 	@echo "All Objects: $(ALL_OBJS)"
 	@echo "Compiler: $(CC)"
 
