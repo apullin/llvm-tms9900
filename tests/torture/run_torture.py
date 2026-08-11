@@ -47,6 +47,7 @@ MAX_STEPS = 50_000_000
 CFLAGS_BASE = [
     "--target=tms9900",
     "-ffreestanding",
+    "-Dalloca=__builtin_alloca",
     "-w",
     "-Wno-implicit-int",
     "-Wno-implicit-function-declaration",
@@ -165,12 +166,6 @@ SKIP_TESTS |= {
     "pr80692.c",
 }
 
-# --- Backend crash (vector / ISel failure) ---
-SKIP_TESTS |= {
-    "pr53645-2.c",  # LLVM backend crash
-    "scal-to-vec1.c",  # LLVM backend crash
-}
-
 # --- Vector types (16-bit target can't do 128-bit vectors meaningfully) ---
 SKIP_TESTS |= {
     "pr85331.c",
@@ -184,19 +179,6 @@ SKIP_TESTS |= {
 # --- Size mismatch: struct element sizes differ (24-byte struct on 16-bit) ---
 SKIP_TESTS |= {
     "pr36093.c", "pr43783.c",
-}
-
-# --- alloca not supported ---
-SKIP_TESTS |= {
-    "pr30185.c",
-    "20010122-1.c", "20021113-1.c", "20040223-1.c",
-    "941202-1.c", "pr22061-1.c",
-    "alloca-1.c",  # tests alloca alignment
-    # Dynamic alloca (__builtin_alloca with runtime size) — no frame pointer
-    # support, produces incorrect code at O0 (works at O2 when optimizer
-    # eliminates the alloca)
-    "frame-address.c",  # __builtin_alloca, O0 timeout
-    "pr36321.c",  # __builtin_alloca, O0 timeout
 }
 
 # --- Softfloat: double-precision not in our libbuiltins.a ---
@@ -226,7 +208,7 @@ SKIP_TESTS |= {
     "pr44942.c", "pr47538.c", "pr49218.c",
     "pr56205.c", "pr58574.c", "pr59643.c",
     "pr64979.c", "pr67929_1.c", "pr68390.c",
-    "pr79354.c", "regstack-1.c", "scal-to-vec3.c",
+    "pr79354.c", "regstack-1.c", "scal-to-vec1.c", "scal-to-vec3.c",
     "loop-ivopts-1.c", "pr29798.c", "20000731-1.c",
     "stdarg-1.c", "stdarg-2.c", "stdarg-3.c", "stdarg-4.c",
     "strct-pack-1.c",
@@ -272,7 +254,6 @@ SKIP_TESTS |= {
 SKIP_TESTS |= {
     "pr39228.c",  # __builtin_isinff
     "pr47237.c",  # __builtin_apply_args
-    "pr64006.c",  # __mulosi4 (overflow multiply)
 }
 
 # --- sprintf-dependent tests (our sprintf is a no-op) ---
@@ -300,9 +281,11 @@ SKIP_TESTS |= {
     "pr79043.c",   # __attribute__((always_inline, optimize("-fno-strict-aliasing")))
 }
 
-# --- Tests that need label-as-value (computed goto) with specific inlining ---
+# --- GCC-specific label-address inlining quality check ---
 SKIP_TESTS |= {
-    "990208-1.c",  # dg-require-effective-target label_values + inlining
+    # Clang leaves the inline helper out of line, so both stored blockaddress
+    # values are intentionally identical. This is not a target codegen fault.
+    "990208-1.c",
 }
 
 # --- Stack too large for 16-bit address space ---
@@ -328,18 +311,17 @@ SKIP_TESTS |= {
     "divmod-1.c",  # div2(-(1<<15)) expects 32768 (doesn't fit in 16-bit int)
     "20180131-1.c",  # union { short ss; unsigned short us; int x; } assumes int >= 32-bit
     "20021127-1.c",  # llabs(-1LL) test expects llabs to NOT abort (but test defines llabs to abort)
+    "20071211-1.c",  # shifts a 16-bit int by 24
 }
 
-# --- 64-bit long long bit-field tests (>32 bits) ---
-# On TMS9900, long long is 64-bit but these tests use 33/40/41-bit fields
-# which require careful 64-bit ops. These are valid tests but exercise
-# unusual code paths.
+# --- GCC-specific extended-width bit-field arithmetic ---
+# These expect arithmetic at the declared bit-field precision. Clang widens
+# the values to i64 first; the same tests abort with native Clang on the host.
 SKIP_TESTS |= {
     "bitfld-3.c",  # 33/40/41-bit unsigned long long bitfields
     "bitfld-5.c",  # 40-bit unsigned long long bitfield
     "pr32244-1.c",  # 40-bit unsigned long long bitfield shift
     "pr34971.c",  # 40-bit bitfield rotate expression
-    "20071211-1.c",  # 40-bit bitfield + 24-bit bitfield
 }
 
 # --- Vector types on 16-bit target ---
@@ -377,21 +359,6 @@ SKIP_TESTS |= {
     "pr87053.c",  # no return 0, R0 retains last value
 }
 
-# --- LLVM 20 known bugs (not TMS9900-specific) ---
-# __builtin_prefetch: CallInst bad signature assertion in CodeGen
-SKIP_TESTS |= {
-    "builtin-prefetch-1.c", "builtin-prefetch-2.c", "builtin-prefetch-3.c",
-    "builtin-prefetch-4.c", "builtin-prefetch-5.c", "builtin-prefetch-6.c",
-    "pr17377.c",  # also uses __builtin_prefetch
-    "20030323-1.c", "20030811-1.c",  # __builtin_prefetch bad signature
-}
-
-# LLVM 20 ELF writer: temporary symbol assertion in computeSymbolTable
-# when B_sym (long branch) references a local label with absolute relocation
-SKIP_TESTS |= {
-    "20020201-1.c", "20020402-2.c", "pr24716.c",
-}
-
 # --- O0 timeout (too many iterations for emulator step limit) ---
 SKIP_TESTS |= {
     "20011008-3.c",  # ~1.5M iterations of inner sort loop at O0
@@ -420,8 +387,6 @@ def parse_dg_options(filepath):
                     return None  # Skip: needs 32-bit int
                 if "lp64" in line or "int128" in line:
                     return None  # Skip: needs 64-bit
-                if "alloca" in line:
-                    return None  # Skip: needs alloca
     return extra_flags
 
 
