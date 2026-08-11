@@ -58,26 +58,16 @@ CFLAGS_BASE = [
 # Tests to skip: these cannot work on TMS9900 for legitimate reasons
 SKIP_TESTS = set()
 
-# --- __int128 not supported on 16-bit target ---
-SKIP_TESTS |= {
-    "pr85582-1.c", "pr85582-2.c", "pr85582-3.c",
-    "pr84748.c", "pr71554.c", "pr98474.c",
-    "pr65648.c", "pr109938.c", "pr84339.c",
-}
-
 # --- __builtin_setjmp / __builtin_longjmp not supported ---
 SKIP_TESTS |= {
     "built-in-setjmp.c", "pr60003.c",
     "pr64242.c", "pr84521.c",  # __builtin_longjmp
     "pr56982.c",  # setjmp.h
-    "20010904-1.c", "20010904-2.c",  # setjmp.h
 }
 
 # --- System headers not available ---
 SKIP_TESTS |= {
     "loop-2f.c", "loop-2g.c",  # sys/types.h
-    "990628-1.c",  # sys/mman.h + fcntl.h
-    "signal-1.c", "signal-2.c",  # signal.h
     "20101011-1.c",  # signal.h
     "980709-1.c", "990826-0.c",  # math.h
 }
@@ -98,20 +88,26 @@ SKIP_TESTS |= {
     "comp-goto-2.c", "pr24135.c", "pr51447.c", "pr71494.c",
 }
 
-# --- asm-specific / platform-specific ---
+# --- Platform-specific ---
 SKIP_TESTS |= {
     "960830-1.c",  # asm/sysinfo.h
-    "ieee/fp-cmp-1.c", "ieee/fp-cmp-2.c", "ieee/fp-cmp-3.c",
-    "ieee/fp-cmp-4.c", "ieee/fp-cmp-4l.c", "ieee/fp-cmp-4ll.c",
-    "ieee/fp-cmp-5.c", "ieee/fp-cmp-6.c", "ieee/fp-cmp-7.c",
-    "ieee/fp-cmp-8.c", "ieee/fp-cmp-8l.c",
 }
 
-# --- Inline asm that can't target TMS9900 ---
+# --- Target-specific inline asm constraint ---
 SKIP_TESTS |= {
-    "pr40022.c", "pr40657.c", "pr65053-2.c", "pr68328.c",
-    "pr81588.c", "pr82954.c", "pr85156.c", "stkalign.c",
     "990413-2.c",  # invalid asm constraint '=t'
+}
+
+# Self-contained tests from the nested IEEE directory that do not require the
+# unavailable double-precision runtime, hosted signal/math headers, or a
+# multi-source libc harness.
+NESTED_TESTS = {
+    "ieee/20000320-1.c",
+    "ieee/930529-1.c",
+    "ieee/fp-cmp-4e.c",
+    "ieee/fp-cmp-6.c",
+    "ieee/fp-cmp-8e.c",
+    "ieee/mul-subnormal-single-1.c",
 }
 
 # --- VLA in struct fields (clang rejects) ---
@@ -265,11 +261,6 @@ SKIP_TESTS |= {
     "920501-8.c",  # sprintf(%d) + strcmp on result (needs real sprintf + double)
 }
 
-# --- Test depends on double-precision floating point type punning ---
-SKIP_TESTS |= {
-    "930930-2.c",  # union { double d; unsigned long u[2]; } - assumes 64-bit double
-}
-
 # --- noinit attribute: requires reset/re-entry not supported in emulator ---
 SKIP_TESTS |= {
     "noinit-attribute.c",  # calls _start() to simulate reset
@@ -327,14 +318,6 @@ SKIP_TESTS |= {
 # --- Vector types on 16-bit target ---
 SKIP_TESTS |= {
     "pr53645.c",  # 128-bit vector div/mod
-    "pr70903.c",  # 256-bit vector shuffle
-}
-
-# --- Upstream LLVM optimizer bug: union aggregate zero-init ---
-# Union initialization generates undef padding in the aggregate constant,
-# leading to wrong values at runtime.
-SKIP_TESTS |= {
-    "pr19687.c",  # upstream union zero-init undef padding bug
 }
 
 # --- Stack overflow (array too large for 64KB) ---
@@ -496,8 +479,12 @@ def main():
 
     # Collect test files
     test_files = sorted(TORTURE_DIR.glob("*.c"))
+    test_files += [TORTURE_DIR / name for name in sorted(NESTED_TESTS)]
     if args.filter:
-        test_files = [f for f in test_files if args.filter in f.name]
+        test_files = [
+            f for f in test_files
+            if args.filter in f.relative_to(TORTURE_DIR).as_posix()
+        ]
 
     print(f"Found {len(test_files)} test files", flush=True)
 
@@ -515,7 +502,7 @@ def main():
             print(f"\n=== -O{opt} ===", flush=True)
 
             for i, test_file in enumerate(test_files):
-                name = test_file.name
+                name = test_file.relative_to(TORTURE_DIR).as_posix()
 
                 # Check skip list
                 if name in SKIP_TESTS:
