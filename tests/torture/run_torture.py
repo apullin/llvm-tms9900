@@ -348,13 +348,6 @@ SKIP_TESTS |= {
     "pr70903.c",  # 256-bit vector shuffle
 }
 
-# --- Varargs long long alignment ---
-# va_arg(ap, long long) expects 4-byte alignment padding but caller doesn't
-# insert it. Real ABI bug, complex to fix.
-SKIP_TESTS |= {
-    "991216-2.c",  # va_arg(ap, long long) misaligned
-}
-
 # --- Upstream LLVM optimizer bug: union aggregate zero-init ---
 # Union initialization generates undef padding in the aggregate constant,
 # leading to wrong values at runtime.
