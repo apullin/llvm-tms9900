@@ -25,7 +25,7 @@ void operator delete(void *p, size_t, std::align_val_t) noexcept { free(p); }
 void operator delete[](void *p, std::align_val_t) noexcept { free(p); }
 void operator delete[](void *p, size_t, std::align_val_t) noexcept { free(p); }
 
-extern "C" void abort() { for (;;) {} }
-extern "C" void __cxa_pure_virtual() { for (;;) {} }
+extern "C" __attribute__((used)) void abort() { for (;;) {} }
+extern "C" __attribute__((used)) void __cxa_pure_virtual() { for (;;) {} }
 extern "C" int __cxa_atexit(void (*)(void *), void *, void *) { return 0; }
 extern "C" void *__dso_handle = 0;

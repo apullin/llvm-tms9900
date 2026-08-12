@@ -81,19 +81,56 @@ def run_cmd(cmd, **kwargs):
     return subprocess.run(cmd, check=True, **kwargs)
 
 
-def build_benchmark(bench: str, opt: str) -> pathlib.Path:
+def builtins_suffix(builtins_mode: str) -> str:
+    if builtins_mode == "lto-archive":
+        return "-blto-gc"
+    if builtins_mode == "local":
+        return "-local"
+    return ""
+
+
+def build_dir_name(opt: str, lto: bool, builtins_mode: str) -> str:
+    name = f"O{opt}"
+    if lto:
+        name += "-lto"
+    name += builtins_suffix(builtins_mode)
+    return name
+
+
+def opt_label(opt: str, lto: bool, builtins_mode: str) -> str:
+    label = f"O{opt}"
+    if lto:
+        label += "+LTO"
+    if builtins_mode == "lto-archive":
+        label += "+BLTO+GC"
+    elif builtins_mode == "local":
+        label += "+LOCAL"
+    return label
+
+
+def build_benchmark(bench: str, opt: str, lto: bool, builtins_mode: str) -> pathlib.Path:
     """Build a benchmark using make, return path to .bin file."""
+    make_cmd = [
+        "make",
+        "-C",
+        str(BENCH_DIR),
+        bench,
+        f"OPT={opt}",
+        f"BUILTINS_MODE={builtins_mode}",
+    ]
+    if lto:
+        make_cmd.append("LTO=1")
     run_cmd(
-        ["make", "-C", str(BENCH_DIR), bench, f"OPT={opt}"],
+        make_cmd,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
     )
-    return BENCH_DIR / "build" / f"O{opt}" / f"{bench}.bin"
+    return BENCH_DIR / "build" / build_dir_name(opt, lto, builtins_mode) / f"{bench}.bin"
 
 
-def get_code_size(bench: str, opt: str) -> int:
+def get_code_size(bench: str, opt: str, lto: bool, builtins_mode: str) -> int:
     """Get .text section size from ELF."""
-    elf = BENCH_DIR / "build" / f"O{opt}" / f"{bench}.elf"
+    elf = BENCH_DIR / "build" / build_dir_name(opt, lto, builtins_mode) / f"{bench}.elf"
     out = subprocess.check_output(
         [str(SIZE), "-A", str(elf)], text=True
     )
@@ -135,17 +172,17 @@ def run_trace(bin_path: pathlib.Path, max_steps: int) -> dict:
     return {"halt": "unknown", "steps": 0, "clk": 0}
 
 
-def run_one(bench: str, opt: str) -> dict:
+def run_one(bench: str, opt: str, lto: bool, builtins_mode: str) -> dict:
     """Build and run a single benchmark, return results dict."""
     try:
-        bin_path = build_benchmark(bench, opt)
+        bin_path = build_benchmark(bench, opt, lto, builtins_mode)
     except subprocess.CalledProcessError as e:
         return {
-            "bench": bench, "opt": opt,
+            "bench": bench, "opt": opt_label(opt, lto, builtins_mode),
             "status": "build_fail", "error": e.stderr.decode() if e.stderr else str(e),
         }
 
-    code_size = get_code_size(bench, opt)
+    code_size = get_code_size(bench, opt, lto, builtins_mode)
     info = run_trace(bin_path, MAX_STEPS)
 
     halt = info.get("halt", "unknown")
@@ -161,7 +198,7 @@ def run_one(bench: str, opt: str) -> dict:
         status = halt.upper()
 
     return {
-        "bench": bench, "opt": f"O{opt}",
+        "bench": bench, "opt": opt_label(opt, lto, builtins_mode),
         "status": status,
         "code_size": code_size,
         "steps": steps,
@@ -176,8 +213,8 @@ def print_table(results: list) -> None:
     print("-" * len(header))
     for r in results:
         print(
-            f"{r['bench']:<20} {r['opt']:<5} {r['status']:<8} "
-            f"{r['code_size']:<8} {r['steps']:<12} {r['cycles']:<12}"
+            f"{r.get('bench', '?'):<20} {r.get('opt', '?'):<5} {r.get('status', '?'):<8} "
+            f"{r.get('code_size', 0):<8} {r.get('steps', 0):<12} {r.get('cycles', 0):<12}"
         )
 
 
@@ -185,7 +222,10 @@ def print_csv(results: list) -> None:
     """Print results as CSV."""
     print("benchmark,opt,status,code_bytes,steps,cycles")
     for r in results:
-        print(f"{r['bench']},{r['opt']},{r['status']},{r['code_size']},{r['steps']},{r['cycles']}")
+        print(
+            f"{r.get('bench', '?')},{r.get('opt', '?')},{r.get('status', '?')},"
+            f"{r.get('code_size', 0)},{r.get('steps', 0)},{r.get('cycles', 0)}"
+        )
 
 
 def main() -> int:
@@ -196,6 +236,11 @@ def main() -> int:
                         help="Specific benchmarks to run. Can repeat.")
     parser.add_argument("--csv", action="store_true",
                         help="Output as CSV")
+    parser.add_argument("--lto", action="store_true",
+                        help="Enable full LTO for the benchmark build")
+    parser.add_argument("--builtins-mode", choices=["prebuilt", "lto-archive", "local"],
+                        default="prebuilt",
+                        help="Builtin library mode for links (default: prebuilt)")
     parser.add_argument("--max-steps", type=int, default=MAX_STEPS,
                         help="Max instructions per run")
     args = parser.parse_args()
@@ -222,12 +267,16 @@ def main() -> int:
     results = []
     for opt in opts:
         for bench in benchmarks:
-            r = run_one(bench, opt)
+            r = run_one(bench, opt, args.lto, args.builtins_mode)
             results.append(r)
             if not args.csv:
                 status_char = "+" if r["status"] == "PASS" else "-"
-                print(f"  [{status_char}] {bench} -O{opt}: {r['status']} "
-                      f"({r['code_size']}B, {r['steps']} steps, {r['cycles']} cycles)")
+                print(
+                    f"  [{status_char}] {bench} {opt_label(opt, args.lto, args.builtins_mode)}: "
+                    f"{r['status']} "
+                    f"({r.get('code_size', 0)}B, {r.get('steps', 0)} steps, "
+                    f"{r.get('cycles', 0)} cycles)"
+                )
 
     print()
     if args.csv:

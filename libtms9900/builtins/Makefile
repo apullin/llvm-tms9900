@@ -11,6 +11,9 @@ AR = ../../llvm-project/build/bin/llvm-ar
 
 ASFLAGS = --target=tms9900 -c
 CFLAGS = --target=tms9900 -O2 -fno-builtin -c
+I64_CFLAGS = $(CFLAGS)
+MULCHK_CFLAGS = $(CFLAGS)
+RT_CFLAGS = $(CFLAGS)
 
 # Assembly source files (32-bit builtins + memops + bitops)
 ASM_SRCS = mul32.S div32.S shift32.S memcpy.S memset.S memmove.S \
@@ -66,13 +69,25 @@ $(BUILD)/%.o: %.S | $(BUILD)
 
 # Pattern rule for compiling i64 C sources
 $(BUILD)/%.o: i64/%.c | $(BUILD)
-	$(CC) $(CFLAGS) -o $@ $<
+	$(CC) $(I64_CFLAGS) -o $@ $<
 
 # Pattern rule for compiling single-precision soft-float sources
 $(BUILD)/%.o: softfloat/%.c | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $<
 
 # Pattern rule for compiling runtime C sources
+$(BUILD)/mulvdi3.o: mulvdi3.c | $(BUILD)
+	$(CC) $(MULCHK_CFLAGS) -o $@ $<
+
+$(BUILD)/mulosi4.o: mulosi4.c | $(BUILD)
+	$(CC) $(MULCHK_CFLAGS) -o $@ $<
+
+$(BUILD)/malloc.o: malloc.c | $(BUILD)
+	$(CC) $(RT_CFLAGS) -o $@ $<
+
+$(BUILD)/string_utils.o: string_utils.c | $(BUILD)
+	$(CC) $(RT_CFLAGS) -o $@ $<
+
 $(BUILD)/%.o: %.c | $(BUILD)
 	$(CC) $(CFLAGS) -o $@ $<
 

@@ -10,31 +10,76 @@ ROOT     = ../..
 LLVM_BIN = $(ROOT)/llvm-project/build/bin
 CC       = $(LLVM_BIN)/clang
 LD       = $(LLVM_BIN)/ld.lld
+AR       = $(LLVM_BIN)/llvm-ar
 OBJCOPY  = $(LLVM_BIN)/llvm-objcopy
 SIZE     = $(LLVM_BIN)/llvm-size
 
 TARGET   = --target=tms9900
 OPT      ?= 2
+LTO      ?= 0
+BUILTINS_MODE ?= prebuilt
 # -mno-relax-all needed at -O0 to prevent "fixup value out of range" on large functions
 ifeq ($(OPT),0)
 EXTRA_CFLAGS = -mno-relax-all
 endif
-CFLAGS   = $(TARGET) -O$(OPT) -ffreestanding -fno-builtin -nostdlib $(EXTRA_CFLAGS)
-LDFLAGS  = -T bench.ld
+ifeq ($(LTO),1)
+LTO_CFLAGS = -flto -flto-linker-scripts
+LTO_SUFFIX = -lto
+LTO_OPT = $(if $(filter s z,$(OPT)),2,$(OPT))
+LTO_LDFLAGS = --lto-O$(LTO_OPT) --lto-linker-scripts
+endif
 
 # C++ flags (freestanding, no exceptions/RTTI)
-CXXFLAGS = $(TARGET) -O$(OPT) -ffreestanding -fno-builtin -nostdlib -fno-exceptions -fno-rtti -fno-threadsafe-statics -nostdinc++ $(EXTRA_CFLAGS)
+CXXFLAGS = $(TARGET) -O$(OPT) -ffreestanding -fno-builtin -nostdlib -fno-exceptions -fno-rtti -fno-threadsafe-statics -nostdinc++ $(EXTRA_CFLAGS) $(LTO_CFLAGS)
 
 # C++ flags with libc++ STL headers (header-only freestanding subset)
 STLFLAGS = $(CXXFLAGS) -isystem libcxx_config -isystem $(ROOT)/llvm-project/libcxx/include
 
 # Softfloat/runtime always compiled at -O2 (matches real-world precompiled library)
-SF_CFLAGS = $(TARGET) -O2 -ffreestanding -fno-builtin -nostdlib
+SF_CFLAGS = $(TARGET) -O2 -ffreestanding -fno-builtin -nostdlib $(LTO_CFLAGS)
 
-BUILD    = build/O$(OPT)
+ifeq ($(BUILTINS_MODE),lto-archive)
+BUILTINS_SUFFIX = -blto-gc
+BUILTINS_BUILD_DIR ?= build-lto-gc-O$(OPT)
+BUILTINS_LTO_CFLAGS = $(TARGET) -O$(OPT) -fno-builtin -c -flto -flto-linker-scripts -ffunction-sections -fdata-sections
+BUILTINS_I64_OPT = $(if $(filter s z,$(OPT)),2,$(OPT))
+BUILTINS_I64_LTO_CFLAGS = $(TARGET) -O$(BUILTINS_I64_OPT) -fno-builtin -c -flto -flto-linker-scripts -ffunction-sections -fdata-sections
+BUILTINS_LDFLAGS = --gc-sections
+else ifeq ($(BUILTINS_MODE),local)
+BUILTINS_SUFFIX = -local
+endif
 
-# Builtins library
-BUILTINS = $(ROOT)/libtms9900/builtins/build/libbuiltins.a
+BUILD ?= build/O$(OPT)$(LTO_SUFFIX)$(BUILTINS_SUFFIX)
+CFLAGS   = $(TARGET) -O$(OPT) -ffreestanding -fno-builtin -nostdlib $(EXTRA_CFLAGS) $(LTO_CFLAGS)
+LDFLAGS  = -T bench.ld $(LTO_LDFLAGS) $(BUILTINS_LDFLAGS)
+
+BUILTINS_DIR = $(ROOT)/libtms9900/builtins
+
+ifeq ($(BUILTINS_MODE),lto-archive)
+BUILTINS ?= $(BUILTINS_DIR)/$(BUILTINS_BUILD_DIR)/libbuiltins.a
+else ifeq ($(BUILTINS_MODE),local)
+BUILTINS ?= $(LOCAL_BUILTINS_I64_OBJS) $(LOCAL_BUILTINS_ARITH_C_OBJS) \
+            $(BUILD)/libbuiltins_rt.a $(BUILD)/libbuiltins_asm.a
+else
+BUILTINS ?= $(BUILTINS_DIR)/build/libbuiltins.a
+endif
+
+# Builtins sources for local build mode
+BUILTINS_ASM_SRCS = mul32.S div32.S shift32.S memcpy.S memset.S memmove.S \
+                    bswapsi2.S clzsi2.S ctzsi2.S ashldi3.S negdi2.S \
+                    cmpdi2.S clzdi2.S ctzdi2.S ffssi2.S paritysi2.S \
+                    popcountsi2.S bswapdi2.S absvsi2.S absvdi2.S \
+                    addvsi3.S addvdi3.S mulvsi3.S divmodsi4.S
+BUILTINS_I64_SRCS = i64/muldi3.c i64/udivmoddi4.c i64/divdi3.c i64/udivdi3.c \
+                    i64/moddi3.c i64/umoddi3.c
+BUILTINS_ARITH_C_SRCS = mulvdi3.c mulosi4.c
+BUILTINS_RT_C_SRCS = malloc.c string_utils.c
+
+LOCAL_BUILTINS_ASM_OBJS = $(patsubst %.S,$(BUILD)/builtins/%.o,$(BUILTINS_ASM_SRCS))
+LOCAL_BUILTINS_I64_OBJS = $(patsubst %.c,$(BUILD)/builtins/%.o,$(BUILTINS_I64_SRCS))
+LOCAL_BUILTINS_ARITH_C_OBJS = $(patsubst %.c,$(BUILD)/builtins/%.o,$(BUILTINS_ARITH_C_SRCS))
+LOCAL_BUILTINS_RT_C_OBJS = $(patsubst %.c,$(BUILD)/builtins/%.o,$(BUILTINS_RT_C_SRCS))
+LOCAL_BUILTINS_CFLAGS = $(TARGET) -O$(OPT) -ffreestanding -fno-builtin -nostdlib $(EXTRA_CFLAGS) $(LTO_CFLAGS)
 
 # Softfloat library
 SOFTFLOAT_DIR = $(ROOT)/libtms9900/builtins/softfloat
@@ -75,6 +120,20 @@ all: $(ALL_BENCHMARKS:%=$(BUILD)/%.bin)
 $(BUILD):
 	mkdir -p $(BUILD)
 
+ifeq ($(BUILTINS_MODE),lto-archive)
+$(BUILTINS_DIR)/$(BUILTINS_BUILD_DIR)/libbuiltins.a:
+	$(MAKE) -C $(BUILTINS_DIR) BUILD=$(BUILTINS_BUILD_DIR) \
+		CFLAGS="$(BUILTINS_LTO_CFLAGS)" \
+		I64_CFLAGS="$(BUILTINS_I64_LTO_CFLAGS)" \
+		all
+endif
+
+$(BUILD)/libbuiltins_asm.a: $(LOCAL_BUILTINS_ASM_OBJS) | $(BUILD)
+	$(AR) rcs $@ $^
+
+$(BUILD)/libbuiltins_rt.a: $(LOCAL_BUILTINS_RT_C_OBJS) | $(BUILD)
+	$(AR) rcs $@ $^
+
 # Startup object
 $(BUILD)/bench_start.o: bench_start.s | $(BUILD)
 	$(CC) $(TARGET) -c -o $@ $<
@@ -94,6 +153,19 @@ $(BUILD)/sf_%.o: $(SOFTFLOAT_DIR)/%.c | $(BUILD)
 # FP builtins (always -O2 — runtime library is precompiled)
 $(BUILD)/fp32_builtins.o: $(FP_BUILTINS_SRC) | $(BUILD)
 	$(CC) $(SF_CFLAGS) -c -o $@ $<
+
+# Local builtins build mode: compile builtins into the benchmark build tree
+$(BUILD)/builtins/%.o: $(BUILTINS_DIR)/%.S | $(BUILD)
+	@mkdir -p $(dir $@)
+	$(CC) $(TARGET) -c -o $@ $<
+
+$(BUILD)/builtins/%.o: $(BUILTINS_DIR)/i64/%.c | $(BUILD)
+	@mkdir -p $(dir $@)
+	$(CC) $(LOCAL_BUILTINS_CFLAGS) -c -o $@ $<
+
+$(BUILD)/builtins/%.o: $(BUILTINS_DIR)/%.c | $(BUILD)
+	@mkdir -p $(dir $@)
+	$(CC) $(LOCAL_BUILTINS_CFLAGS) -c -o $@ $<
 
 # Basic benchmarks: startup + benchmark + builtins
 $(BUILD)/fib.elf $(BUILD)/bubble_sort.elf $(BUILD)/deep_recursion.elf \
@@ -165,6 +237,9 @@ clean:
 info:
 	@echo "Benchmarks: $(ALL_BENCHMARKS)"
 	@echo "Optimization: -O$(OPT)"
+	@echo "LTO: $(LTO)"
+	@echo "Builtins mode: $(BUILTINS_MODE)"
+	@echo "Builtins: $(BUILTINS)"
 	@echo "Build dir: $(BUILD)"
 
 .PHONY: all clean info $(ALL_BENCHMARKS)
