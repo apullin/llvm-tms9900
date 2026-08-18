@@ -25,7 +25,7 @@ endif
 ifeq ($(LTO),1)
 LTO_CFLAGS = -flto -flto-linker-scripts
 LTO_SUFFIX = -lto
-LTO_OPT = $(if $(filter s z,$(OPT)),2,$(OPT))
+LTO_OPT ?= $(OPT)
 LTO_LDFLAGS = --lto-O$(LTO_OPT) --lto-linker-scripts
 endif
 
