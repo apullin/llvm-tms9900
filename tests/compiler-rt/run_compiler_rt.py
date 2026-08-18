@@ -118,7 +118,7 @@ SKIP_TESTS |= {
 # --- extended precision (xf, 80-bit long double) ---
 SKIP_TESTS |= {
     "powixf2_test.c",
-    "extendxftf2_test.c",
+    "extendhfxf2_test.c", "extendxftf2_test.c", "truncxfhf2_test.c",
     "fixxfdi_test.c", "fixxfti_test.c",
     "fixunsxfdi_test.c", "fixunsxfsi_test.c", "fixunsxfti_test.c",
     "floatdixf_test.c", "floattixf_test.c",
@@ -145,7 +145,8 @@ SKIP_TESTS |= {
 
 # --- Platform-specific / OS-dependent ---
 SKIP_TESTS |= {
-    "atomic_test.c", "clear_cache_test.c", "cpu_model_test.c",
+    "aarch64_cpu_features_test.c", "atomic_test.c", "clear_cache_test.c",
+    "cpu_model_test.c",
     "enable_execute_stack_test.c", "gcc_personality_test.c",
     "trampoline_setup_test.c",
     "ctor_dtor.c",  # needs full CRT startup, not a builtin test
