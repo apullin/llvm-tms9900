@@ -158,7 +158,7 @@ UDIV32:
 ; Divisor is 16-bit (in R3). Check if dividend high word < divisor
 ; to avoid hardware DIV overflow
        C    R0,R3
-       JLE  UDIV32_SW         ; R0 >= R3 -> would overflow hardware DIV
+       JHE  UDIV32_SW         ; R0 >= R3 -> would overflow hardware DIV
 ; Hardware DIV: R0:R1 / R3 -> R0=quotient, R1=remainder
        DIV  R3,R0
 ; Pack results: quotient in R4:R5, remainder in R6:R7
@@ -224,13 +224,11 @@ UDIV_R4_DONE:
 
 UDIV_CMP:
 ; Compare remainder (R6:R7) with divisor (R2:R3)
-; Note: C Rx,Ry in LLVM assembler sets LGT when Ry > Rx (unsigned).
-; So JH (LGT && !EQ) fires when Ry > Rx, and JL (!LGT && !EQ) fires when Ry < Rx.
-       C    R6,R2             ; Compare high words: LGT if R2 > R6
-       JH   UDIV_NEXT         ; R2 > R6: divisor_hi > rem_hi → remainder < divisor, skip
-       JL   UDIV_SUB          ; R2 < R6: divisor_hi < rem_hi → remainder > divisor, subtract
-       C    R7,R3             ; High equal, compare low: LGT if R3 > R7
-       JH   UDIV_NEXT         ; R3 > R7: divisor_lo > rem_lo → remainder < divisor, skip
+       C    R6,R2             ; Compare high words: remainder vs divisor
+       JL   UDIV_NEXT         ; remainder high < divisor high, skip
+       JH   UDIV_SUB          ; remainder high > divisor high, subtract
+       C    R7,R3             ; High words equal, compare low words
+       JL   UDIV_NEXT         ; remainder low < divisor low, skip
 
 UDIV_SUB:
 ; Subtract divisor from remainder: R6:R7 -= R2:R3
