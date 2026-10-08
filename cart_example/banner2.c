@@ -21,16 +21,7 @@ const uint8_t cart_header[] = {
     0x00                                  /* Pad to align */
 };
 
-/* ===== STARTUP CODE ===== */
-__attribute__((naked, section(".cart_entry")))
-void _start(void) {
-    asm volatile(
-        "LWPI 0x8300\n\t"       /* Workspace at scratchpad */
-        "LIMI 0\n\t"            /* Disable interrupts */
-        "LI R10, 0x83FE\n\t"    /* Stack pointer at top of scratchpad */
-        /* Fall through to main */
-    );
-}
+/* Shared crt0.s initializes RAM and the stack, then calls main explicitly. */
 
 /* ===== VDP ACCESS ===== */
 #define VDP_CMD_PORT   0x8C02

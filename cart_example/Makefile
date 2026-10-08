@@ -34,12 +34,12 @@ all: $(PROGRAMS:%=%.bin) $(PROGRAMS:%=%.cart) $(PROGRAMS:%=%.rpk) $(EA5_PROGRAMS
 %.o: %.S
 	$(CC) --target=tms9900 -c $< -o $@
 
-%.elf: %.o cart.ld
-	$(LD) $(LDFLAGS) $< -o $@
+%.elf: crt0.o %.o cart.ld
+	$(LD) $(LDFLAGS) $(filter %.o,$^) -o $@
 	$(OBJDUMP) -d $@ > $(@:.elf=.list)
 
-%.ea5.elf: %.o ea5.ld
-	$(LD) $(EA5_LDFLAGS) $< -o $@
+%.ea5.elf: crt0.o %.o ea5.ld
+	$(LD) $(EA5_LDFLAGS) $(filter %.o,$^) -o $@
 	$(OBJDUMP) -d $@ > $(@:.elf=.list)
 
 %.ea5.bin: %.ea5.elf

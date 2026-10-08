@@ -45,6 +45,11 @@ initial RAM contents; that extended image is not a cartridge distribution file.
 Tests halt with `IDLE`, returning zero in R0 on success and a numbered failure
 in R0 otherwise. No VDP, keyboard, or TI console ROM emulation is needed.
 
+`run_demo_tests.py --trace PATH` uses the actual demo Makefile and stops just
+before main in both banner programs. At all six optimization levels it checks
+the workspace, masked interrupts, and aligned expansion-RAM stack in cartridge
+and EA5 builds. It runs from a temporary copy and leaves local demo images alone.
+
 `run_trig_tests.py` builds libm and its real soft-float runtime at five
 optimization levels. It checks sine/cosine on 244 binary32 inputs: signed zero,
 subnormals, quadrant boundaries, large finite values, infinities, signaling and

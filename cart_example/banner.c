@@ -21,21 +21,12 @@ const uint8_t cart_header[] = {
     0x00                                  /* Pad to align */
 };
 
-/* ===== STARTUP CODE ===== */
-__attribute__((naked, section(".cart_entry")))
-void _start(void) {
-    asm volatile(
-        "LWPI 0x8300\n\t"       /* Workspace at scratchpad */
-        "LIMI 0\n\t"            /* Disable interrupts */
-        "LI R10, 0x83FE\n\t"    /* Stack pointer at top of scratchpad */
-        /* Fall through to main - linker places .text after .cart_entry */
-    );
-}
+/* crt0.s initializes RAM and the ABI-aligned expansion-RAM stack, then calls
+ * main explicitly. Do not rely on main being first in the .text section. */
 
 /* ===== VDP ACCESS ===== */
 /*
- * TI-99/4A VDP requires "symbolic" addressing mode (absolute address in
- * instruction). The backend doesn't support this yet, so we hand-encode MOVB.
+ * These MOVB instructions use symbolic addressing for the fixed VDP ports.
  * TMS9900 MOVB transfers the HIGH byte of a register, hence the << 8 shifts.
  */
 #define VDP_CMD_PORT   0x8C02
