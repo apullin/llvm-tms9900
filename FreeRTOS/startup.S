@@ -44,18 +44,25 @@
 
         .global _start
 _start:
+        ; Mask interrupts before initializing C runtime state. The loader/reset
+        ; vector supplies WP=0x8300; initialized .data is loaded directly into
+        ; RAM by this flat-image format and needs no ROM-to-RAM copy.
+        LIMI    0
+
         ; Set up main stack pointer (R10) for startup C code
         LI      R10, 0xF000
 
-        ; Clear BSS
+        ; Clear exactly the BSS bytes. MOVB auto-increment advances by one,
+        ; handles odd sizes/addresses, and equality works across 0x8000.
         LI      R0, __bss_start
         LI      R1, __bss_end
-        JMP     .Lbss_check
+        CLR     R2
 .Lbss_loop:
-        CLR     *R0+
-.Lbss_check:
         C       R0, R1
-        JLT     .Lbss_loop
+        JEQ     .Lbss_done
+        MOVB    R2, *R0+
+        JMP     .Lbss_loop
+.Lbss_done:
 
         ; Call main()
         BL      @main
