@@ -50,6 +50,13 @@ before main in both banner programs. At all six optimization levels it checks
 the workspace, masked interrupts, and aligned expansion-RAM stack in cartridge
 and EA5 builds. It runs from a temporary copy and leaves local demo images alone.
 
+`run_build_tests.py` checks configuration and header dependencies. Its host
+fixture covers partial flag changes, compiler replacement, parallel builds,
+spaces/quotes in settings, and read-only `make -n`. It also switches real
+builtins/libm builds from -O0 to -O2 through a partial object request, then
+compares each completed archive byte-for-byte with a fresh -O2 build. Use
+`--host-only` to run without the TMS9900 toolchain.
+
 `run_trig_tests.py` builds libm and its real soft-float runtime at five
 optimization levels. It checks sine/cosine on 244 binary32 inputs: signed zero,
 subnormals, quadrant boundaries, large finite values, infinities, signaling and

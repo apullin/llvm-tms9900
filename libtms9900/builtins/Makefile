@@ -65,38 +65,38 @@ $(BUILD):
 
 # Pattern rule for assembling
 $(BUILD)/%.o: %.S | $(BUILD)
-	$(CC) $(ASFLAGS) -o $@ $<
+	$(CC) $(ASFLAGS) -MMD -MP -MF $(@:.o=.d) -o $@ $<
 
 # Pattern rule for compiling i64 C sources
 $(BUILD)/%.o: i64/%.c | $(BUILD)
-	$(CC) $(I64_CFLAGS) -o $@ $<
+	$(CC) $(I64_CFLAGS) -MMD -MP -MF $(@:.o=.d) -o $@ $<
 
 # Pattern rule for compiling single-precision soft-float sources
 $(BUILD)/%.o: softfloat/%.c | $(BUILD)
-	$(CC) $(CFLAGS) -o $@ $<
+	$(CC) $(CFLAGS) -MMD -MP -MF $(@:.o=.d) -o $@ $<
 
 # Pattern rule for compiling runtime C sources
 $(BUILD)/mulvdi3.o: mulvdi3.c | $(BUILD)
-	$(CC) $(MULCHK_CFLAGS) -o $@ $<
+	$(CC) $(MULCHK_CFLAGS) -MMD -MP -MF $(@:.o=.d) -o $@ $<
 
 $(BUILD)/mulosi4.o: mulosi4.c | $(BUILD)
-	$(CC) $(MULCHK_CFLAGS) -o $@ $<
+	$(CC) $(MULCHK_CFLAGS) -MMD -MP -MF $(@:.o=.d) -o $@ $<
 
 $(BUILD)/malloc.o: malloc.c | $(BUILD)
-	$(CC) $(RT_CFLAGS) -o $@ $<
+	$(CC) $(RT_CFLAGS) -MMD -MP -MF $(@:.o=.d) -o $@ $<
 
 $(BUILD)/string_utils.o: string_utils.c | $(BUILD)
-	$(CC) $(RT_CFLAGS) -o $@ $<
+	$(CC) $(RT_CFLAGS) -MMD -MP -MF $(@:.o=.d) -o $@ $<
 
 $(BUILD)/%.o: %.c | $(BUILD)
-	$(CC) $(CFLAGS) -o $@ $<
+	$(CC) $(CFLAGS) -MMD -MP -MF $(@:.o=.d) -o $@ $<
 
 # Clean up
 clean:
 	rm -rf $(BUILD)
 
 $(BUILD)/libbuiltins.a: $(ALL_OBJS:%.o=$(BUILD)/%.o)
-	$(AR) rcs $@ $^
+	$(AR) rcs $@ $(ALL_OBJS:%.o=$(BUILD)/%.o)
 
 # Show what would be built
 info:
@@ -116,3 +116,16 @@ install: $(BUILD)/libbuiltins.a
 	cp $(BUILD)/libbuiltins.a $(RESOURCE_DIR)/lib/libclang_rt.builtins-tms9900.a
 
 .PHONY: all clean info install
+
+# A partial rebuild with new flags must invalidate the unrequested objects too.
+CONFIG_STAMP = $(BUILD)/.build-config.json
+CONFIG_ARGS = --value=$(call quote_config,CFLAGS=$(CFLAGS)) \
+              --value=$(call quote_config,ASFLAGS=$(ASFLAGS)) \
+              --value=$(call quote_config,I64_CFLAGS=$(I64_CFLAGS)) \
+              --value=$(call quote_config,MULCHK_CFLAGS=$(MULCHK_CFLAGS)) \
+              --value=$(call quote_config,RT_CFLAGS=$(RT_CFLAGS)) \
+              --tool=$(call quote_config,$(CC)) --tool=$(call quote_config,$(AR))
+CONFIG_OUTPUTS = $(ALL_OBJS:%.o=$(BUILD)/%.o) $(BUILD)/libbuiltins.a
+CONFIG_PATTERNS = *.o *.d *.a *.a.tmp
+include ../../tools/build_config.mk
+-include $(wildcard $(BUILD)/*.d)
