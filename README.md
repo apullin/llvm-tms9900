@@ -4,7 +4,7 @@
   <img src="images/banner.png" alt="LLVM TMS9900 running on TI-99/4A" width="500">
 </p>
 
-A production-quality LLVM backend for the [Texas Instruments TMS9900](https://en.wikipedia.org/wiki/TMS9900) — a unique and long-forgotten 16-bit processor that was surprisingly modern in its architecture, but famously hamstrung in the ill-fated [TI-99/4A](https://en.wikipedia.org/wiki/TI-99/4A) home computer. Compiles C, C++ (with STL), and Rust 🦀 to native TMS9900 machine code.
+An LLVM backend for the [Texas Instruments TMS9900](https://en.wikipedia.org/wiki/TMS9900) — a unique and long-forgotten 16-bit processor that was surprisingly modern in its architecture, but famously hamstrung in the ill-fated [TI-99/4A](https://en.wikipedia.org/wiki/TI-99/4A) home computer. Compiles C, C++ (with STL), and Rust 🦀 to native TMS9900 machine code.
 
 ## Highlights
 
@@ -19,7 +19,7 @@ A production-quality LLVM backend for the [Texas Instruments TMS9900](https://en
 
 ## The CPU
 
-The [TMS9900](https://en.wikipedia.org/wiki/TMS9900) (1976) was TI's flagship 16-bit microprocessor. Its most distinctive feature is the *workspace pointer* architecture: instead of fixed hardware registers, the CPU's 16 "registers" are just 32 bytes of RAM pointed to by the Workspace Pointer (WP). A context switch is a single instruction (`BLWP`) that atomically swaps all 16 registers by changing one pointer — no pushing, no popping, no saving.
+The [TMS9900](https://en.wikipedia.org/wiki/TMS9900) (1976) was TI's flagship 16-bit microprocessor. Its most distinctive feature is the *workspace pointer* architecture: instead of fixed hardware registers, the CPU's 16 "registers" are just 32 bytes of RAM pointed to by the Workspace Pointer (WP). `BLWP` loads a new WP and PC, saving the old WP, PC and ST in the new workspace's R13–R15. The old workspace's register values remain in RAM.
 
 The chip also has hardware multiply (16×16→32) and divide (32÷16→16), auto-increment addressing, and a bit-addressable I/O bus (CRU). It was genuinely ahead of its time.
 
@@ -37,18 +37,26 @@ git submodule update --init --recursive
 cd llvm-project
 mkdir build && cd build
 cmake -G Ninja \
-  -DLLVM_TARGETS_TO_BUILD="TMS9900" \
+  -DLLVM_TARGETS_TO_BUILD="" \
+  -DLLVM_EXPERIMENTAL_TARGETS_TO_BUILD="TMS9900" \
   -DLLVM_ENABLE_PROJECTS="clang;lld" \
   -DCMAKE_BUILD_TYPE=Release \
+  -DLLVM_ENABLE_ASSERTIONS=OFF \
+  -DLLVM_INCLUDE_BENCHMARKS=OFF \
+  -DLLVM_INCLUDE_EXAMPLES=OFF \
   ../llvm
-ninja
+ninja -j4 clang lld llc opt llvm-mc llvm-objdump llvm-objcopy llvm-readobj llvm-nm llvm-ar llvm-size
+export PATH="$PWD/bin:$PATH"
 ```
+
+TMS9900 is an experimental CMake target. Building the listed tools avoids an
+extra assertion build and unnecessary utilities when disk space is limited.
 
 ### Compile and link
 
 ```bash
 # Compile C to object file
-clang --target=tms9900 -O2 -c main.c -o main.o
+clang --target=tms9900 -O2 -ffreestanding -c main.c -o main.o
 
 # Assemble startup code
 clang --target=tms9900 -c startup.S -o startup.o
@@ -70,7 +78,7 @@ tms9900-trace -l 0x0000 program.bin -n 100000 -S
 
 ```
 llvm-tms9900/
-├── llvm-project/                # LLVM 18 fork (submodule, branch: tms9900)
+├── llvm-project/                # LLVM 20 fork (submodule pins the project revision)
 ├── libtms9900/
 │   ├── builtins/                # Runtime intrinsics (32/64-bit ops, memcpy, soft-float)
 │   ├── libm/                    # Math library (picolibc-based, float32)
@@ -98,7 +106,10 @@ All standard LLVM tools work: `opt` for IR optimization, `llc` for code generati
 
 ### C
 
-Full C11 support in freestanding mode (`-ffreestanding`). All integer sizes through 64-bit, IEEE 754 soft-float, `switch` via jump tables, inline assembly, interrupt handlers, naked functions.
+Freestanding C11 (`-ffreestanding`), integer sizes through 64-bit, binary32
+soft-float, `switch` via jump tables, inline assembly, interrupt handlers, and
+naked functions. This is an embedded toolchain rather than a complete hosted
+C environment; TLS and atomic runtime operations are not supplied.
 
 ### C++ with STL
 
@@ -225,14 +236,19 @@ correctness audit. Functions are linked on demand from the archive.
 
 | Register | Usage |
 |----------|-------|
-| R0       | Return value (16-bit), or R0:R1 (32-bit high:low) |
-| R1–R9    | Arguments (first 9 words), caller-saved |
+| R0–R3    | First four argument words; scalar return words, most-significant first |
+| R4–R9    | Caller-saved scratch |
 | R10      | Stack Pointer |
 | R11      | Link Register (return address) |
-| R12      | CRU Base / general purpose |
+| R12      | Caller-saved scratch; reserve explicitly for CRU use |
 | R13–R15  | Callee-saved |
 
-Arguments: R1–R9, then stack. Stack grows downward, 4-byte aligned. 32-bit arguments use register pairs (R1:R2, R3:R4, ...).
+Non-variadic calls use R0–R3, then the stack. Multiword values are split into
+16-bit words, most-significant first. Variadic calls pass every argument on
+the stack. Scalar returns use R0 (16-bit), R0:R1 (32-bit), or R0–R3 (64-bit).
+R10 is the downward-growing stack pointer with a four-byte boundary. C scalar
+objects of 16 bits and wider have two-byte ABI alignment. BL overwrites R11;
+a non-leaf callee saves its incoming link separately before making calls.
 
 ## Testing
 
@@ -307,10 +323,16 @@ make life2x.img    # EA5 executable
 make banner.rpk    # MAME cartridge
 ```
 
+Cartridge and EA5 maps reserve 2 KiB of upper expansion RAM for the C stack,
+with static storage and the bump allocator's heap below it. Increase the
+reservation with the linker's `--defsym=__stack_size=0x1000` for 4 KiB. The
+linker checks static storage against the reservation; runtime stack exhaustion
+still requires sizing the stack for the application.
+
 ## Exotic TODOs
 
 - **Workspace-aware compilation** — The TMS9900's workspace pointer architecture means a context switch (`BLWP`) swaps all 16 registers atomically by changing one pointer. A workspace-aware compiler could allocate "hot" variables directly in the workspace for ISR-heavy or coroutine-style code, avoiding save/restore overhead entirely. This is architecturally unique to the TMS9900 family and has no equivalent in modern compiler backends.
-- **Migrate to LLVM latest** — The backend currently targets LLVM 18. Porting to the LLVM main branch would unlock newer optimization passes and keep pace with upstream improvements.
+- **Migrate beyond LLVM 20** — Evaluate newer upstream releases with the target regression suites before changing the project's LLVM baseline.
 - **Full DWARF debug info** — Source-level debugging with line numbers and variable inspection.
 - **CRU-aware register allocation** — Reserve R12 only when CRU I/O instructions are used (currently opt-in via `-mattr=+reserve-cru`).
 

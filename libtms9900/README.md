@@ -31,7 +31,9 @@ make clean
 
 To build with different optimization, edit CFLAGS in the Makefile.
 
-**Note**: -O0 currently fails due to branch relaxation issues in the compiler.
+The current optional execution regressions cover `-O0`, `-O1`, `-O2`, `-Os`
+and `-Oz`; the older note about universal `-O0` branch-relaxation failure is
+obsolete.
 
 ## Calling Convention
 
@@ -40,7 +42,10 @@ All functions follow the TMS9900 LLVM calling convention:
 - 32-bit values: high word first (R0:R1 or R2:R3)
 - Return in R0 (16-bit) or R0:R1 (32-bit)
 - R11 = link register
-- Callee-saved: R9, R10 (R10 = stack pointer)
+- Callee-saved allocatable registers: R13, R14, R15
+- R10 = stack pointer, preserved across calls, four-byte aligned
+- R0–R9 and R12 are caller-saved; reserve R12 explicitly when used as CRU base
+- Variadic calls pass all arguments on the stack
 
 ## 32-bit Integer Builtins
 
