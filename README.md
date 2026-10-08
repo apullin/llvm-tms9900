@@ -102,6 +102,34 @@ The backend produces ELF object files directly — no external assembler needed:
 
 All standard LLVM tools work: `opt` for IR optimization, `llc` for code generation, `llvm-objdump` for disassembly, `llvm-size` for section sizes.
 
+### LTO with translation-unit linker-script rules
+
+Ordinary full LTO is available with `-flto=full`. When the linker script selects
+sections by input object or archive name, compile the C/C++ units with the
+additional `-flto-linker-scripts` flag and enable the matching mode in LLD:
+
+```bash
+clang --target=tms9900 -Oz -ffreestanding -fno-builtin \
+  -flto=full -flto-linker-scripts -c main.c -o main.o
+clang --target=tms9900 -c startup.S -o startup.o
+ld.lld --lto-linker-scripts --lto-Oz -T linker.ld \
+  startup.o main.o -o program.elf
+```
+
+This mode preserves input-file identity for script patterns such as
+`main.o(.text*)`, archive-member selection, `KEEP`, `EXCLUDE_FILE`, and ELF
+section-flag predicates. Conditional output sections retain their possible
+fallbacks until native linking resolves them. Inlining is allowed between
+functions with equivalent placement rules; a function assigned to a different
+region remains a call, including when it has `always_inline`.
+
+LLD accepts `--lto-O0`, `--lto-O1`, `--lto-O2`, `--lto-O3`, `--lto-Os`, and
+`--lto-Oz` to choose the link-time optimization level. TU-aware linker-script
+mode supports **full LTO only** and diagnoses ThinLTO inputs. Ordinary ThinLTO
+without this mode remains available. Execution and placement regressions are
+documented in [tests/runtime](tests/runtime/README.md); the simulator is optional
+and is not a dependency of the LLVM backend's in-tree tests.
+
 ## Language Support
 
 ### C
@@ -172,7 +200,7 @@ make run-queue    # queue + rendezvous test
 
 ## Debugging and Emulation
 
-Development and testing uses [tms9900-trace](https://github.com/apullin/tms9900-trace), a standalone TMS9900 CPU emulator. It was invaluable during compiler development — every backend bug was caught and diagnosed using its cycle-accurate execution traces, memory dumps, and JSON output mode.
+Development and testing uses [tms9900-trace](https://github.com/apullin/tms9900-trace), a standalone TMS9900 CPU emulator. Instruction traces, memory dumps, and JSON output help diagnose backend bugs. Its cycle counts are estimates; TI-99/4A memory and peripheral wait states require separate hardware timing validation.
 
 ### GDB/LLDB remote debugging
 

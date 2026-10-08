@@ -55,6 +55,16 @@ default -O3, verifying ROM bounds, identical BIN/CART/RPK payloads and EA5 heade
 `test_exports.py` separately checks converter metadata, malformed/range inputs,
 and PCB choices without requiring the compiler or simulator.
 
+`run_lto_tests.py --trace PATH` executes full TU-aware LTO at all six optimization
+levels and both input orders. Two units share static names, and one static name
+also collides with an external definition. An alwaysinline callee belongs to a
+different script region and must remain there. Native placement, independently
+computed return values, the restored stack and preserved registers are checked
+for five boundary inputs per build. This is a CPU test, without TI console ROM
+or VDP dependencies. Use `-flto=full` for TU-aware linker-script mode; ThinLTO
+inputs are explicitly rejected because equivalent KEEP/placement/import/cache
+support is not implemented.
+
 `run_build_tests.py` checks configuration and header dependencies. Its host
 fixture covers partial flag changes, compiler replacement, parallel builds,
 spaces/quotes in settings, and read-only `make -n`. It also switches real
