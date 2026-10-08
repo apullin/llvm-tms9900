@@ -9,7 +9,7 @@ MEMORY {
 
     /* Upper memory expansion: 24K at 0xA000
      * This is undisturbed RAM on systems with 32KB expansion
-     * Stack starts at 0xFFFE and grows downward
+     * Stack starts at the four-byte-aligned 0xFFFC and grows downward
      */
     RAM (rwx) : ORIGIN = 0xA000, LENGTH = 0x6000
 }

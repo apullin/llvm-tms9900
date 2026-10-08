@@ -1,5 +1,6 @@
 ; TI-99/4A Cartridge Startup Code (crt0.s)
-; Sets up workspace, stack, clears BSS, and calls main
+; Establishes workspace and stack, masks interrupts, copies .data to its RAM
+; address, zeroes .bss, and calls main. C/C++ constructors are not run here.
 
 	.section	.cart_entry,"ax"
 	.globl	_start
@@ -10,9 +11,9 @@ _start:
 	; Disable interrupts
 	LIMI	0
 
-	; Set up stack at top of upper expansion RAM
-	; Stack grows downward from 0xFFFF
-	LI	R10, 0xFFFE
+	; Set up the downward-growing stack in upper expansion RAM. The compiler
+	; ABI requires a four-byte boundary, separately from word alignment.
+	LI	R10, 0xFFFC
 
 	; Copy initialized data from ROM to RAM
 	; __data_load_start is the ROM source (LMA)
@@ -23,8 +24,9 @@ _start:
 .Ldata_loop:
 	C	R1, R2
 	JEQ	.Ldata_done
-	MOV	*R0+, R3
-	MOV	R3, *R1+
+	; Byte copies handle odd section sizes and odd ROM source addresses.
+	MOVB	*R0+, R3
+	MOVB	R3, *R1+
 	JMP	.Ldata_loop
 .Ldata_done:
 
@@ -36,7 +38,8 @@ _start:
 .Lbss_loop:
 	C	R0, R1
 	JEQ	.Lbss_done
-	MOV	R2, *R0+
+	; Byte stores stop exactly at __bss_end, including a one-byte section.
+	MOVB	R2, *R0+
 	JMP	.Lbss_loop
 .Lbss_done:
 

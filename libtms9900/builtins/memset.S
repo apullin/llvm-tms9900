@@ -4,7 +4,7 @@
 ; Input:  R0 = dest, R1 = fill char (low byte), R2 = n (byte count)
 ; Output: R0 = dest (original)
 ;
-; Creates a word fill value (0xXXXX from 0x00XX) for word-aligned fills.
+; Converts int c to unsigned char, then duplicates it for word-aligned fills.
 ; Uses MOV R0, *R3+ to fill 2 bytes per iteration.
 
        .text
@@ -19,6 +19,8 @@ memset:
        CI   R2,0
        JEQ  .Ldone
 
+; C requires conversion to unsigned char, regardless of the int's high byte.
+       ANDI R1,0x00FF
 ; Create word fill value: 0x00XX -> 0xXXXX
        MOV  R1,R0
        SWPB R0                ; R0 = 0xXX00

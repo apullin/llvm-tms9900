@@ -1,0 +1,101 @@
+# Deliberate post-RA counterexamples, compiled through the real peephole and
+# emission passes by run_runtime_tests.py. C cannot reliably retain these
+# exact instruction patterns through earlier optimizations.
+--- |
+  define i16 @byte_gt_one(i16 %value) { ret i16 0 }
+  define i16 @byte_lt_128(i16 %value) { ret i16 0 }
+  define i16 @store_byte_return_word(i16 %value, ptr %address) { ret i16 0 }
+  define void @store_masked_alias(i16 %value) { ret void }
+  define i16 @shift_carry(i16 %value) { ret i16 0 }
+  define i16 @abs_positive(i16 %value) { ret i16 0 }
+...
+---
+name: byte_gt_one
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $r0
+    $r0 = ANDI killed $r0, -256, implicit-def dead $st
+    $r0 = SRLri killed $r0, 8, implicit-def dead $st
+    CI killed $r0, 1, implicit-def $st
+    JGT %bb.2, implicit $st
+  bb.1:
+    $r0 = LI 0, implicit-def dead $st
+    RET_REAL implicit $r11, implicit $r0
+  bb.2:
+    $r0 = LI 1, implicit-def dead $st
+    RET_REAL implicit $r11, implicit $r0
+...
+---
+name: byte_lt_128
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $r0
+    $r0 = ANDI killed $r0, -256, implicit-def dead $st
+    $r0 = SRLri killed $r0, 8, implicit-def dead $st
+    CI killed $r0, 128, implicit-def $st
+    JLT %bb.2, implicit $st
+  bb.1:
+    $r0 = LI 0, implicit-def dead $st
+    RET_REAL implicit $r11, implicit $r0
+  bb.2:
+    $r0 = LI 1, implicit-def dead $st
+    RET_REAL implicit $r11, implicit $r0
+...
+---
+name: store_byte_return_word
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $r0, $r1
+    $r0 = SLAri killed $r0, 8, implicit-def dead $st
+    MOVBmi killed $r1, $r0, implicit-def dead $st
+    RET_REAL implicit $r11, implicit $r0
+...
+---
+name: store_masked_alias
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $r0
+    $r0 = ANDI killed $r0, -256, implicit-def dead $st
+    MOVBmi $r0, killed $r0, implicit-def dead $st
+    RET_REAL implicit $r11
+...
+---
+name: shift_carry
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $r0
+    $r0 = SRLri killed $r0, 8, implicit-def dead $st
+    $r0 = ANDI killed $r0, 255, implicit-def $st
+    JOC %bb.2, implicit $st
+  bb.1:
+    $r0 = LI 0, implicit-def dead $st
+    RET_REAL implicit $r11, implicit $r0
+  bb.2:
+    $r0 = LI 1, implicit-def dead $st
+    RET_REAL implicit $r11, implicit $r0
+...
+---
+name: abs_positive
+tracksRegLiveness: true
+body: |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $r0
+    $r0 = ABSr killed $r0, implicit-def dead $st
+    CI killed $r0, 0, implicit-def $st
+    JGT %bb.2, implicit $st
+  bb.1:
+    $r0 = LI 0, implicit-def dead $st
+    RET_REAL implicit $r11, implicit $r0
+  bb.2:
+    $r0 = LI 1, implicit-def dead $st
+    RET_REAL implicit $r11, implicit $r0
+...
