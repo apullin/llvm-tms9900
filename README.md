@@ -14,7 +14,7 @@ A production-quality LLVM backend for the [Texas Instruments TMS9900](https://en
 - **Rust `#![no_std]`** 🦀 — builds with `cargo +tms9900 build -Z build-std=core`. See [Rust Support](#rust-support) below.
 - **FreeRTOS port** — preemptive multitasking with near-zero-cost context switches via the TMS9900's workspace pointer. See [FreeRTOS](#freertos).
 - **Hand-tuned runtime library** — assembly-optimized 32-bit multiply/divide/shift, 64-bit arithmetic, `memcpy`/`memset`/`memmove` exploiting auto-increment addressing, and IEEE 754 soft-float.
-- **picolibc math** — single-precision `libm` (sin, cos, sqrt, exp, log, pow, ...) built from [picolibc](https://github.com/picolibc/picolibc) sources, with a custom compact sinf/cosf (1.2KB vs 7KB+ standard).
+- **picolibc math** — single-precision `libm` (sin, cos, sqrt, exp, log, pow, ...) built from [picolibc](https://github.com/picolibc/picolibc) sources, including full-range sinf/cosf argument reduction.
 - **GDB/LLDB debugging** — the [tms9900-trace](https://github.com/apullin/tms9900-trace) emulator includes a GDB Remote Serial Protocol stub for interactive debugging with breakpoints, single-stepping, and memory inspection.
 
 ## The CPU
@@ -213,11 +213,13 @@ The 32-bit division includes a hardware `DIV` fast path for 16-bit divisors. Mem
 
 ### Math Library (`libm/`)
 
-Single-precision math built from picolibc sources (~21KB at `-Os`):
+Single-precision math built from picolibc sources:
 
 `sinf`, `cosf`, `tanf`, `asinf`, `acosf`, `atanf`, `atan2f`, `sinhf`, `coshf`, `tanhf`, `expf`, `logf`, `log10f`, `log2f`, `powf`, `sqrtf`, `fabsf`, `fmodf`, `ceilf`, `floorf`, `roundf`, `scalbnf`, `copysignf`, `ldexpf`, `frexpf`
 
-Custom compact `sinf`/`cosf` implementation: 1.2KB combined (vs 7KB+ from stock picolibc).
+`sinf`/`cosf` use full-range picolibc reduction and compensated kernels. The
+earlier compact override and its size/accuracy claims were removed during the
+correctness audit. Functions are linked on demand from the archive.
 
 ## Calling Convention
 

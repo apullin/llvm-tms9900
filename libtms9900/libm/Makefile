@@ -1,5 +1,5 @@
 # libm for TMS9900
-# Combines our optimized functions with picolibc generic implementations
+# Builds picolibc's binary32 implementations, including full-range sin/cos.
 
 CC = ../../llvm-project/build/bin/clang
 AR = ../../llvm-project/build/bin/llvm-ar
@@ -17,10 +17,9 @@ PICO_COMMON = ../picolibc/libm/common
 
 BUILD = build
 
-# Our optimized implementations (override picolibc)
-OUR_SRCS = sincosf_tiny.c
-
-# Picolibc math functions (NOT sin/cos - we override those)
+# Picolibc math functions. Use the full-range reducer and compensated kernels
+# for sin/cos, as for tan; the former compact override did not meet libm's
+# binary32 domain or accuracy requirements.
 PICO_MATH_SRCS = \
     sf_sqrt.c sf_fabs.c sf_floor.c sf_ceil.c \
     sf_exp.c sf_exp2.c sf_log.c sf_log10.c sf_log2.c \
@@ -29,17 +28,19 @@ PICO_MATH_SRCS = \
     sf_sinh.c sf_cosh.c sf_tanh.c \
     sf_asinh.c sf_acosh.c sf_atanh.c \
     sf_hypot.c \
+    sf_sin.c sf_cos.c kf_sin.c kf_cos.c \
     sf_tan.c sf_rem_pio2.c kf_rem_pio2.c kf_tan.c
 
 # Picolibc common functions
 PICO_COMMON_SRCS = \
-    sf_scalbn.c sf_copysign.c sf_finite.c sf_isnan.c sf_isinf.c sf_issignaling.c sf_modf.c
+    sf_scalbn.c sf_copysign.c sf_finite.c sf_isnan.c sf_isinf.c sf_issignaling.c sf_modf.c \
+    sf_fpclassify.c sf_round.c \
+    math_errf_invalidf.c math_errf_oflowf.c math_errf_uflowf.c math_errf_divzerof.c
 
-OUR_OBJS = $(OUR_SRCS:%.c=$(BUILD)/%.o)
 PICO_MATH_OBJS = $(PICO_MATH_SRCS:%.c=$(BUILD)/%.o)
 PICO_COMMON_OBJS = $(PICO_COMMON_SRCS:%.c=$(BUILD)/%.o)
 
-ALL_OBJS = $(OUR_OBJS) $(PICO_MATH_OBJS) $(PICO_COMMON_OBJS)
+ALL_OBJS = $(PICO_MATH_OBJS) $(PICO_COMMON_OBJS)
 
 .PHONY: all clean sizes
 
@@ -48,11 +49,15 @@ all: $(BUILD)/libm.a sizes
 $(BUILD):
 	mkdir -p $(BUILD)
 
-# Our optimized functions
-$(BUILD)/%.o: %.c | $(BUILD)
-	$(CC) $(CFLAGS) -c $< -o $@
-
 # Picolibc math functions
+$(BUILD)/sf_sin.o: $(PICO_MATH)/sf_sin.c | $(BUILD)
+	$(CC) $(CFLAGS) -c $< -o $@
+$(BUILD)/sf_cos.o: $(PICO_MATH)/sf_cos.c | $(BUILD)
+	$(CC) $(CFLAGS) -c $< -o $@
+$(BUILD)/kf_sin.o: $(PICO_MATH)/kf_sin.c | $(BUILD)
+	$(CC) $(CFLAGS) -c $< -o $@
+$(BUILD)/kf_cos.o: $(PICO_MATH)/kf_cos.c | $(BUILD)
+	$(CC) $(CFLAGS) -c $< -o $@
 $(BUILD)/sf_sqrt.o: $(PICO_MATH)/sf_sqrt.c | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 $(BUILD)/sf_fabs.o: $(PICO_MATH)/sf_fabs.c | $(BUILD)
@@ -109,6 +114,18 @@ $(BUILD)/kf_tan.o: $(PICO_MATH)/kf_tan.c | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 
 # Picolibc common functions
+$(BUILD)/sf_round.o: $(PICO_COMMON)/sf_round.c | $(BUILD)
+	$(CC) $(CFLAGS) -c $< -o $@
+$(BUILD)/sf_fpclassify.o: $(PICO_COMMON)/sf_fpclassify.c | $(BUILD)
+	$(CC) $(CFLAGS) -c $< -o $@
+$(BUILD)/math_errf_invalidf.o: $(PICO_COMMON)/math_errf_invalidf.c | $(BUILD)
+	$(CC) $(CFLAGS) -c $< -o $@
+$(BUILD)/math_errf_oflowf.o: $(PICO_COMMON)/math_errf_oflowf.c | $(BUILD)
+	$(CC) $(CFLAGS) -c $< -o $@
+$(BUILD)/math_errf_uflowf.o: $(PICO_COMMON)/math_errf_uflowf.c | $(BUILD)
+	$(CC) $(CFLAGS) -c $< -o $@
+$(BUILD)/math_errf_divzerof.o: $(PICO_COMMON)/math_errf_divzerof.c | $(BUILD)
+	$(CC) $(CFLAGS) -c $< -o $@
 $(BUILD)/sf_scalbn.o: $(PICO_COMMON)/sf_scalbn.c | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 $(BUILD)/sf_copysign.o: $(PICO_COMMON)/sf_copysign.c | $(BUILD)
@@ -124,8 +141,12 @@ $(BUILD)/sf_issignaling.o: $(PICO_COMMON)/sf_issignaling.c | $(BUILD)
 $(BUILD)/sf_modf.o: $(PICO_COMMON)/sf_modf.c | $(BUILD)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD)/libm.a: $(ALL_OBJS)
-	$(AR) rcs $@ $(ALL_OBJS)
+$(BUILD)/libm.a: $(ALL_OBJS) Makefile
+	# Recreate the archive: ar rcs alone would leave the old sin/cos override
+	# member behind when upgrading an existing build directory.
+	rm -f $@.tmp
+	$(AR) rcs $@.tmp $(ALL_OBJS)
+	mv $@.tmp $@
 
 sizes: $(BUILD)/libm.a
 	@echo ""

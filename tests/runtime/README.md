@@ -44,3 +44,16 @@ starts at `>6000`. Extending the simulator image to prefill BSS represents its
 initial RAM contents; that extended image is not a cartridge distribution file.
 Tests halt with `IDLE`, returning zero in R0 on success and a numbered failure
 in R0 otherwise. No VDP, keyboard, or TI console ROM emulation is needed.
+
+`run_trig_tests.py` builds libm and its real soft-float runtime at five
+optimization levels. It checks sine/cosine on 244 binary32 inputs: signed zero,
+subnormals, quadrant boundaries, large finite values, infinities, signaling and
+quiet NaNs, deterministic arbitrary bit patterns and embedded-scale angles.
+It also checks binary32 classification and signaling-NaN/signbit dispatch in
+the actual picolibc headers, plus roundf ties and signed zero. Each library
+build starts with a stale override archive member to verify upgrade cleanup.
+Reference
+values come from the host's double-precision libm, rounded to binary32, with a
+two-ULP finite-value tolerance; this is not an exhaustive or formal accuracy
+proof. Stored results are checked independently from a simulator RAM dump as
+well as by the compiled C test. No test-local math-error helper stubs are linked.

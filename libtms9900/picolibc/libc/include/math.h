@@ -307,7 +307,20 @@ extern int __signbitl(long double);
 #define issubnormal(__x) (__builtin_issubnormal(__x))
 #define iszero(__x)      (__builtin_iszero(__x))
 #else
+#if defined(__clang__) && !defined(__cplusplus)
+/* Select by type rather than generating conditional calls. At -O0 Clang can
+ * retain unreachable arms of the sizeof-based ternary, pulling double/long
+ * double classification and conversion routines into a float-only program.
+ * Keep the library's classification functions (and their sNaN semantics). */
 #if defined(__HAVE_LONG_DOUBLE)
+#define __float_generic3(__f, __d, __l, __x) \
+    _Generic((__x), float: __f(__x), long double: __l((long double)(__x)), \
+             default: __d((double)(__x)))
+#else
+#define __float_generic3(__f, __d, __l, __x) \
+    _Generic((__x), float: __f(__x), default: __d((double)(__x)))
+#endif
+#elif defined(__HAVE_LONG_DOUBLE)
 #define __float_generic3(__f, __d, __l, __x)                          \
     ((sizeof(__x) == sizeof(float))        ? __f(__x)                 \
          : (sizeof(__x) == sizeof(double)) ? __d((double)(__x))       \
@@ -366,7 +379,13 @@ int __iseqsigl(long double x, long double y);
 int __issignalingf(float f);
 int __issignaling(double d);
 
+#if defined(__clang__) && !defined(__cplusplus)
 #if defined(__HAVE_LONG_DOUBLE)
+int __issignalingl(long double d);
+#endif
+#define issignaling(__x) \
+    __float_generic3(__issignalingf, __issignaling, __issignalingl, __x)
+#elif defined(__HAVE_LONG_DOUBLE)
 int __issignalingl(long double d);
 #define issignaling(__x)                                                         \
     ((sizeof(__x) == sizeof(float))        ? __issignalingf(__x)                 \
@@ -382,7 +401,10 @@ int __issignalingl(long double d);
 #endif /* __HAVE_LONG_DOUBLE */
 #endif
 
-#if __GNUC_PREREQ(4, 0)
+#if defined(__clang__) && !defined(__cplusplus)
+#define signbit(__x) \
+    __float_generic3(__builtin_signbitf, __builtin_signbit, __builtin_signbitl, __x)
+#elif __GNUC_PREREQ(4, 0)
 #if defined(__HAVE_LONG_DOUBLE)
 #define signbit(__x)                                                                   \
     ((sizeof(__x) == sizeof(float))                                                    \

@@ -33,5 +33,6 @@
 #define __OBSOLETE_MATH_DOUBLE 0
 #define __OBSOLETE_MATH 0
 
-/* Skip problematic 64-bit declarations */
-#define _NEED_FLOAT64 0
+/* math_config.h selects its float64 declarations from the compiler's type
+ * widths. Do not force _NEED_FLOAT64: defining it to zero still enables
+ * #ifdef tests and is redefined by that header. The built library is FP32. */

@@ -12,7 +12,6 @@ libtms9900/
 │   ├── shift32.asm    # 32-bit shifts
 │   └── softfloat/     # IEEE 754 soft-float (from compiler-rt)
 ├── libm/              # Math library
-│   ├── sincosf_tiny.c # Compact sin/cos (our implementation)
 │   ├── include/       # Configuration headers
 │   └── Makefile       # Builds libm.a
 └── picolibc/          # Embedded C library (upstream source)
@@ -78,30 +77,26 @@ Located in `builtins/softfloat/`.
 
 The `picolibc/` directory contains upstream [picolibc](https://github.com/picolibc/picolibc) source. We currently use only the libm components, building selected files via `libm/Makefile`. This will likely expand to include libc components as the project matures.
 
-## Compact sinf/cosf Implementation
+## sinf/cosf correctness
 
-We provide a size-optimized `sinf`/`cosf` that replaces picolibc's 7KB+ implementation with a 1.2KB version.
+The default build uses picolibc's `sf_sin.c`/`sf_cos.c`, compensated polynomial
+kernels, and full-range binary32 argument reduction. This shares the reducer
+already used by `tanf`. Huge finite arguments, infinities, NaNs, signed zero,
+and subnormals are part of the supported domain. This build offers IEEE results
+without errno handling, as configured in `libm/include/picolibc.h`.
 
-### How It Works
+The former 1.2 KiB compact override has been removed. It lost thousands of ULPs
+at 10,000 radians, overflowed the TMS9900's 16-bit quadrant counter for larger
+inputs, and mishandled infinities/NaNs. Even near pi/4 its sine and cosine
+polynomials missed the previously advertised one-ULP accuracy.
 
-Standard libm sin/cos implementations use Payne-Hanek range reduction, which requires a ~200 byte table of 2/π digits and complex multi-precision arithmetic to handle `sin(1e10)` accurately. This pulls in 8KB+ of code.
+Full-range reduction costs more code than that approximation; a future small
+angle library should expose its input domain and error bound through a separate
+API. Run the optional execution regression with:
 
-Our implementation uses Cody-Waite style range reduction with extended-precision π/2 constants:
-- `pio2_hi` = high part of π/2
-- `pio2_lo` = low part (correction term)
-
-### Tradeoffs
-
-| Property | Our Implementation | Full picolibc |
-|----------|-------------------|---------------|
-| Size | 1.2KB | 7KB+ |
-| Accuracy for \|x\| < 10^4 | Full precision | Full precision |
-| Accuracy for \|x\| > 10^6 | Reduced (~4 digits) | Full precision |
-| ULP error (small x) | < 1 ULP | < 1 ULP |
-
-**When to use full picolibc sin/cos**: If you need `sin(1e10)` to be accurate to full float precision, rebuild with picolibc's sf_sin.c/sf_cos.c instead of sincosf_tiny.c.
-
-**For typical embedded use** (angles in radians, game physics, signal processing), our compact version is accurate and 6x smaller.
+```sh
+python3 tests/runtime/run_trig_tests.py --trace /path/to/tms9900-trace
+```
 
 ## libm Symbol Table
 
@@ -119,7 +114,7 @@ All sizes in bytes. **Note**: These sizes will change as the compiler improves.
 | `ceilf` | Ceiling | 352 | 350 | 352 | 368 |
 | `copysignf` | Copy sign | 14 | 14 | 14 | 14 |
 | `coshf` | Hyperbolic cosine | 450 | 458 | 450 | 480 |
-| `cosf` | Cosine (compact impl) | *incl.* | *incl.* | *incl.* | *incl.* |
+| `cosf` | Cosine (full-range implementation; sizes pending) | — | — | — | — |
 | `expf` | Exponential | 1,208 | 1,216 | 1,208 | 1,254 |
 | `exp2f` | Base-2 exponential (wrapper) | 22 | 22 | 22 | 22 |
 | `fabsf` | Absolute value | 6 | 6 | 6 | 6 |
@@ -135,14 +130,15 @@ All sizes in bytes. **Note**: These sizes will change as the compiler improves.
 | `modff` | Integer/fraction split | 244 | 264 | 244 | 244 |
 | `powf` | Power function | 5,312 | 5,100 | 5,326 | 5,428 |
 | `scalbnf` | Scale by power of 2 | 398 | 350 | 376 | 402 |
-| `sinf` | Sine (compact impl) | *incl.* | *incl.* | *incl.* | *incl.* |
+| `sinf` | Sine (full-range implementation; sizes pending) | — | — | — | — |
 | `sinhf` | Hyperbolic sine | 430 | 424 | 430 | 456 |
 | `sqrtf` | Square root | 740 | 736 | 740 | **4,416** |
 | `tanhf` | Hyperbolic tangent | 282 | 282 | 282 | 294 |
-| **sincosf_tiny.o** | sinf + cosf combined | 1,314 | **1,200** | 1,396 | 1,456 |
 | **TOTAL** | | 21,522 | **20,980** | 21,546 | 25,816 |
 
-*Note: sinf and cosf are both in sincosf_tiny.o; linker pulls the whole object if either is used.*
+These object-size measurements are historical. The sine/cosine override was
+removed during the correctness audit; its measurements do not describe the
+current library. Use `make sizes` with `llvm-size` available for current sizes.
 
 ### Observations
 
