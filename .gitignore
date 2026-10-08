@@ -1,8 +1,17 @@
 # Build artifacts
 *.o
+*.d
 *.bin
 *.lst
 *.zip
+
+# Generated demo containers and listings (keep all demo sources).
+/cart_example/*.elf
+/cart_example/*.cart
+/cart_example/*.rpk
+/cart_example/*.img
+/cart_example/*.list
+/cart_example/.build-config.json
 
 # OS files
 .DS_Store

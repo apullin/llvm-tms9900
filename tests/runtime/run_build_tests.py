@@ -136,6 +136,32 @@ include {helper}
                 before = snapshot(build)
                 run([*base, f"BUILD={build}", f"CFLAGS={flags} -O2", build / archive], source)
                 check(snapshot(build) == before, f"{library} repeated build preserves artifacts")
+
+            demos = work / "cart_example"
+            demos.mkdir()
+            (work / "tools").symlink_to(ROOT / "tools", target_is_directory=True)
+            for name in ["Makefile", "ball.c", "banner.c", "crt0.s", "cart.ld", "ea5.ld"]:
+                shutil.copy2(ROOT / "cart_example" / name, demos / name)
+            for name in ["bin2ea5.py", "bin2rpk.py"]:
+                shutil.copy2(ROOT / name, work / name)
+            base = ["make", "-j4", f"LLVM_BUILD={tools}"]
+            run([*base, "ball.bin", "banner.bin"], demos)
+            flags = "--target=tms9900 -O0 -ffreestanding -fno-builtin -Wno-main-return-type"
+            run([*base, "ball.o", f"CFLAGS={flags}"], demos)
+            check(not (demos / "banner.o").exists() and not (demos / "banner.bin").exists(),
+                  "demo partial flag switch invalidates other programs")
+            run([*base, "ball.bin", "banner.bin", f"CFLAGS={flags}"], demos)
+            before = snapshot(demos)
+            run([*base, "ball.bin", "banner.bin", f"CFLAGS={flags}"], demos)
+            check(snapshot(demos) == before, "demo repeated build preserves artifacts")
+            run([*base, "ball.elf", f"CFLAGS={flags}", "STACK_SIZE=0x1000"], demos)
+            syms = {fields[2]: int(fields[0], 16)
+                    for line in run([tools / "llvm-nm", demos / "ball.elf"]).splitlines()
+                    if len(fields := line.split()) == 3 and fields[1].lower() != "u"}
+            check(syms["__heap_end"] == 0xf000 and syms["__stack_top"] == 0xfffc,
+                  "demo stack reservation switch reaches the linker")
+            check(not (demos / "banner.bin").exists(),
+                  "demo link configuration switch invalidates unrequested images")
     print(f"{count}/{count} build dependency tests passed")
     return 0
 

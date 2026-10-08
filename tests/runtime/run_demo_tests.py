@@ -27,6 +27,8 @@ def main():
                         help="Override sources/Makefile for before/after comparisons")
     parser.add_argument("--opt", nargs="+", choices=["0", "1", "2", "3", "s", "z"],
                         default=["0", "1", "2", "3", "s", "z"])
+    parser.add_argument("--build-all", action="store_true",
+                        help="Also build and verify every distributed format at default -O3")
     args = parser.parse_args()
     tools = args.llvm_bin.resolve()
     failures = []
@@ -36,8 +38,11 @@ def main():
         demos = root / "cart_example"
         demos.mkdir()
         (root / "tools").symlink_to(ROOT / "tools", target_is_directory=True)
-        for name in ["Makefile", "cart.ld", "ea5.ld", "crt0.s", "banner.c", "banner2.c"]:
-            shutil.copy2(args.demo_dir / name, demos / name)
+        for pattern in ["Makefile", "*.ld", "*.c", "*.s", "*.S"]:
+            for source in args.demo_dir.glob(pattern):
+                shutil.copy2(source, demos / source.name)
+        for name in ["bin2ea5.py", "bin2rpk.py"]:
+            shutil.copy2(ROOT / name, root / name)
         for opt in args.opt:
             run(["make", "clean", f"LLVM_BUILD={tools}"], cwd=demos)
             flags = (f"--target=tms9900 -O{opt} -ffreestanding -fno-builtin "
@@ -64,6 +69,31 @@ def main():
                           f"(halt={state['halt']}, SP={state['r'][10]})", flush=True)
                     if not passed:
                         failures.append(name)
+        if args.build_all:
+            import zipfile
+            import xml.etree.ElementTree as ET
+            run(["make", "clean", f"LLVM_BUILD={tools}"], cwd=demos)
+            run(["make", "-j4", "all", f"LLVM_BUILD={tools}"], cwd=demos)
+            bins = sorted(demos.glob("*.bin"))
+            for binary in bins:
+                if binary.name.endswith(".ea5.bin"):
+                    continue
+                payload = binary.read_bytes()
+                cart = binary.with_suffix(".cart").read_bytes()
+                with zipfile.ZipFile(binary.with_suffix(".rpk")) as archive:
+                    layout = ET.fromstring(archive.read("layout.xml"))
+                    rom = archive.read(layout.find("resources/rom").get("file"))
+                ea5 = binary.with_suffix(".img").read_bytes()
+                ram_payload = binary.with_suffix(".ea5.bin").read_bytes()
+                passed = (0 < len(payload) <= 8192 and payload == cart == rom
+                          and ea5[:2] == b"\0\0"
+                          and int.from_bytes(ea5[2:4], "big") == len(ea5)
+                          and ea5[4:6] == b"\xa0\0" and ea5[6:] == ram_payload)
+                count += 1
+                print(f"{binary.stem} distribution: {'PASS' if passed else 'FAIL'} "
+                      f"({len(payload)} ROM bytes)", flush=True)
+                if not passed:
+                    failures.append(binary.stem + " distribution")
     print(f"{count - len(failures)}/{count} demo startup tests passed")
     return bool(failures)
 

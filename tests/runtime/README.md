@@ -34,7 +34,8 @@ Temporary objects and images are removed automatically.
   boundary in both maps.
 
 The demo maps reserve 2 KiB at the top of expansion RAM for the C stack. Use
-`ld.lld --defsym=__stack_size=0x1000` to reserve 4 KiB instead. They provide
+`ld.lld --defsym=__stack_size=0x1000 -T SCRIPT ...` to reserve 4 KiB instead
+(define it before reading the script). They provide
 `__heap_start`/`__heap_end` for malloc and `__stack_top` for startup. This prevents
 static-storage/heap overlap with the reservation; runtime stack exhaustion
 still requires choosing a sufficient stack size for the program.
@@ -49,6 +50,10 @@ in R0 otherwise. No VDP, keyboard, or TI console ROM emulation is needed.
 before main in both banner programs. At all six optimization levels it checks
 the workspace, masked interrupts, and aligned expansion-RAM stack in cartridge
 and EA5 builds. It runs from a temporary copy and leaves local demo images alone.
+Add `--build-all` to build all eleven demos in every distribution format at
+default -O3, verifying ROM bounds, identical BIN/CART/RPK payloads and EA5 headers.
+`test_exports.py` separately checks converter metadata, malformed/range inputs,
+and PCB choices without requiring the compiler or simulator.
 
 `run_build_tests.py` checks configuration and header dependencies. Its host
 fixture covers partial flag changes, compiler replacement, parallel builds,
@@ -56,6 +61,8 @@ spaces/quotes in settings, and read-only `make -n`. It also switches real
 builtins/libm builds from -O0 to -O2 through a partial object request, then
 compares each completed archive byte-for-byte with a fresh -O2 build. Use
 `--host-only` to run without the TMS9900 toolchain.
+The target run also verifies demo partial flag switches and a changed stack
+reservation, including invalidation of unrequested demo images.
 
 `run_trig_tests.py` builds libm and its real soft-float runtime at five
 optimization levels. It checks sine/cosine on 244 binary32 inputs: signed zero,

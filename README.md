@@ -311,21 +311,42 @@ The integrated assembler supports both LLVM and xas99 syntax:
 
 ## TI-99/4A Cartridge Examples
 
-The `cart_example/` directory has several demos:
+The `cart_example/` directory ships all these demos:
 
-- **life2x.c** — Game of Life with 2× pixels, keyboard controls, dirty-tile tracing
-- **ball.c / ball2.c** — Bouncing ball demos
-- **banner.c** — Text banner
+| Programs | Description |
+|---|---|
+| `banner`, `banner2` | Text banner and TI intro-style color bars |
+| `ball`, `ball2` | Bouncing balls; ball2 adds fractional velocity and edge counters |
+| `life`, `life2` | Bit-parallel Game of Life, with successive compute optimizations |
+| `life2x`, `life2_2x` | 2× pixels, keyboard controls and dirty drawing |
+| `life3_2x` | 2× Life with a hand-written assembly row update |
+| `kb_test`, `irq_test` | Console keyboard and VBlank-counter experiments |
 
 ```bash
 cd cart_example
-make life2x.img    # EA5 executable
-make banner.rpk    # MAME cartridge
+make              # Build every demo and every distribution format
+make life3_2x.rpk  # One cartridge, packaged for js99er/MAME
+make life2x.img    # One EA5 executable, loaded in expansion RAM at >A000
 ```
+
+Each demo produces an unpadded `.bin` ROM image and an identical `.cart` copy,
+plus an `.rpk` containing that ROM and its XML metadata. Use the cartridge
+loader in js99er for these outputs. The `.img` is a separate, single-segment
+EA5 RAM executable; it uses the EA5 map and is not a cartridge. `.elf` and
+disassembly `.list` files are retained for inspection.
+
+Default compilation is `-O3`. Override `CFLAGS` on the make command line to
+compare another optimization level. Flag, compiler, converter and header
+changes are tracked, so a partial rebuild cannot reuse artifacts from another
+configuration; `make -n` remains read-only. Life's keyboard demos rely on the
+TI console ROM, and `irq_test` polls its VBlank counter rather than installing
+a new interrupt handler. Their visual/keyboard behavior needs a TI emulator or
+hardware; the optional CPU simulator tests verify startup and container builds.
 
 Cartridge and EA5 maps reserve 2 KiB of upper expansion RAM for the C stack,
 with static storage and the bump allocator's heap below it. Increase the
-reservation with the linker's `--defsym=__stack_size=0x1000` for 4 KiB. The
+reservation with `make STACK_SIZE=0x1000` for 4 KiB (or the linker's
+`--defsym=__stack_size=0x1000` before `-T` when linking manually). The
 linker checks static storage against the reservation; runtime stack exhaustion
 still requires sizing the stack for the application.
 

@@ -1,8 +1,6 @@
-# TI-99/4A Cartridge Build
-#
-# Produces .bin ROM images (0x6000-0x7FFF) and .cart copies for js99er.
+# TI-99/4A demos: flat 8 KiB cartridges and single-segment EA5 RAM programs.
+.DEFAULT_GOAL := all
 
-# LLVM toolchain
 LLVM_BUILD = ../llvm-project/build/bin
 CC = $(LLVM_BUILD)/clang
 LD = $(LLVM_BUILD)/ld.lld
@@ -13,34 +11,46 @@ PYTHON = python3
 BIN2RPK = ../bin2rpk.py
 BIN2EA5 = ../bin2ea5.py
 
-# Flags
+CPPFLAGS =
 CFLAGS = --target=tms9900 -O3 -fno-builtin -ffreestanding -Wno-main-return-type
+ASFLAGS = --target=tms9900
 LDFLAGS = -T cart.ld --print-memory-usage
 EA5_LDFLAGS = -T ea5.ld --print-memory-usage
+STACK_SIZE = 0x800
+STACK_FLAG = --defsym=__stack_size=$(STACK_SIZE)
 EA5_BASE = 0xA000
 EA5_MAX_SIZE = 0x6000
 
 PROGRAMS = banner banner2 ball ball2 life life2 life2x life2_2x life3_2x kb_test irq_test
-EA5_PROGRAMS = $(PROGRAMS)
+KEYBOARD_PROGRAMS = life2x life2_2x life3_2x kb_test
+OBJECTS = crt0.o kbd.o life3_2x_step.o $(PROGRAMS:%=%.o)
+OUTPUTS = $(OBJECTS) $(foreach suffix,elf ea5.elf bin ea5.bin cart rpk img list ea5.list,$(PROGRAMS:%=%.$(suffix)))
 
 .PHONY: all clean
+# Keep intermediates for inspection and later partial builds.
+.SECONDARY:
+all: $(PROGRAMS:%=%.bin) $(PROGRAMS:%=%.cart) $(PROGRAMS:%=%.rpk) $(PROGRAMS:%=%.img)
 
-all: $(PROGRAMS:%=%.bin) $(PROGRAMS:%=%.cart) $(PROGRAMS:%=%.rpk) $(EA5_PROGRAMS:%=%.img)
-
-# Pattern rules
 %.o: %.c
-	$(CC) $(CFLAGS) -c $< -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) -MMD -MP -MF $(@:.o=.d) -c $< -o $@
 
 %.o: %.S
-	$(CC) --target=tms9900 -c $< -o $@
+	$(CC) $(CPPFLAGS) $(ASFLAGS) -MMD -MP -MF $(@:.o=.d) -c $< -o $@
 
+crt0.o: crt0.s
+	$(CC) $(ASFLAGS) -c $< -o $@
+
+# All demos share byte-exact .data/.bss initialization and an aligned C stack.
 %.elf: crt0.o %.o cart.ld
-	$(LD) $(LDFLAGS) $(filter %.o,$^) -o $@
+	$(LD) $(STACK_FLAG) $(LDFLAGS) $(filter %.o,$^) -o $@
 	$(OBJDUMP) -d $@ > $(@:.elf=.list)
 
 %.ea5.elf: crt0.o %.o ea5.ld
-	$(LD) $(EA5_LDFLAGS) $(filter %.o,$^) -o $@
+	$(LD) $(STACK_FLAG) $(EA5_LDFLAGS) $(filter %.o,$^) -o $@
 	$(OBJDUMP) -d $@ > $(@:.elf=.list)
+
+$(KEYBOARD_PROGRAMS:%=%.elf) $(KEYBOARD_PROGRAMS:%=%.ea5.elf): kbd.o
+life3_2x.elf life3_2x.ea5.elf: life3_2x_step.o
 
 %.ea5.bin: %.ea5.elf
 	$(OBJCOPY) -O binary --only-section=.text --only-section=.rodata --only-section=.data $< $@
@@ -51,105 +61,43 @@ all: $(PROGRAMS:%=%.bin) $(PROGRAMS:%=%.cart) $(PROGRAMS:%=%.rpk) $(EA5_PROGRAMS
 %.cart: %.bin
 	cp $< $@
 
-# RPK only applies to cartridge .bin images.
-$(PROGRAMS:%=%.rpk): %.rpk: %.bin
+# EA5 payloads are RAM executables, not cartridge ROMs. Do not wrap them as RPK.
+$(PROGRAMS:%=%.rpk): %.rpk: %.bin $(BIN2RPK)
 	$(PYTHON) $(BIN2RPK) $< -o $@
 
-%.img: %.ea5.bin
+%.img: %.ea5.bin $(BIN2EA5)
 	$(PYTHON) $(BIN2EA5) --max-size $(EA5_MAX_SIZE) -a $(EA5_BASE) $< -o $@
 
 %.list: %.elf
 	$(OBJDUMP) -d $< > $@
 
-# Assemble crt0
-crt0.o: crt0.s
-	$(CC) --target=tms9900 -c $< -o $@
-
-# Programs that use crt0 for startup (BSS/data init)
-ball.elf: crt0.o ball.o cart.ld
-	$(LD) $(LDFLAGS) crt0.o ball.o -o $@
-	$(OBJDUMP) -d $@ > $(@:.elf=.list)
-
-ball.ea5.elf: crt0.o ball.o ea5.ld
-	$(LD) $(EA5_LDFLAGS) crt0.o ball.o -o $@
-	$(OBJDUMP) -d $@ > $(@:.elf=.list)
-
-ball2.elf: crt0.o ball2.o cart.ld
-	$(LD) $(LDFLAGS) crt0.o ball2.o -o $@
-	$(OBJDUMP) -d $@ > $(@:.elf=.list)
-
-ball2.ea5.elf: crt0.o ball2.o ea5.ld
-	$(LD) $(EA5_LDFLAGS) crt0.o ball2.o -o $@
-	$(OBJDUMP) -d $@ > $(@:.elf=.list)
-
-life.elf: crt0.o life.o cart.ld
-	$(LD) $(LDFLAGS) crt0.o life.o -o $@
-	$(OBJDUMP) -d $@ > $(@:.elf=.list)
-
-life.ea5.elf: crt0.o life.o ea5.ld
-	$(LD) $(EA5_LDFLAGS) crt0.o life.o -o $@
-	$(OBJDUMP) -d $@ > $(@:.elf=.list)
-
-life2.elf: crt0.o life2.o cart.ld
-	$(LD) $(LDFLAGS) crt0.o life2.o -o $@
-	$(OBJDUMP) -d $@ > $(@:.elf=.list)
-
-life2.ea5.elf: crt0.o life2.o ea5.ld
-	$(LD) $(EA5_LDFLAGS) crt0.o life2.o -o $@
-	$(OBJDUMP) -d $@ > $(@:.elf=.list)
-
-life2x.elf: crt0.o life2x.o kbd.o cart.ld
-	$(LD) $(LDFLAGS) crt0.o life2x.o kbd.o -o $@
-	$(OBJDUMP) -d $@ > $(@:.elf=.list)
-
-life2x.ea5.elf: crt0.o life2x.o kbd.o ea5.ld
-	$(LD) $(EA5_LDFLAGS) crt0.o life2x.o kbd.o -o $@
-	$(OBJDUMP) -d $@ > $(@:.elf=.list)
-
-life2_2x.elf: crt0.o life2_2x.o kbd.o cart.ld
-	$(LD) $(LDFLAGS) crt0.o life2_2x.o kbd.o -o $@
-	$(OBJDUMP) -d $@ > $(@:.elf=.list)
-
-life2_2x.ea5.elf: crt0.o life2_2x.o kbd.o ea5.ld
-	$(LD) $(EA5_LDFLAGS) crt0.o life2_2x.o kbd.o -o $@
-	$(OBJDUMP) -d $@ > $(@:.elf=.list)
-
-life3_2x.elf: crt0.o life3_2x.o life3_2x_step.o kbd.o cart.ld
-	$(LD) $(LDFLAGS) crt0.o life3_2x.o life3_2x_step.o kbd.o -o $@
-	$(OBJDUMP) -d $@ > $(@:.elf=.list)
-
-life3_2x.ea5.elf: crt0.o life3_2x.o life3_2x_step.o kbd.o ea5.ld
-	$(LD) $(EA5_LDFLAGS) crt0.o life3_2x.o life3_2x_step.o kbd.o -o $@
-	$(OBJDUMP) -d $@ > $(@:.elf=.list)
-
-kb_test.elf: crt0.o kb_test.o kbd.o cart.ld
-	$(LD) $(LDFLAGS) crt0.o kb_test.o kbd.o -o $@
-	$(OBJDUMP) -d $@ > $(@:.elf=.list)
-
-kb_test.ea5.elf: crt0.o kb_test.o kbd.o ea5.ld
-	$(LD) $(EA5_LDFLAGS) crt0.o kb_test.o kbd.o -o $@
-	$(OBJDUMP) -d $@ > $(@:.elf=.list)
-
-irq_test.elf: crt0.o irq_test.o cart.ld
-	$(LD) $(LDFLAGS) crt0.o irq_test.o -o $@
-	$(OBJDUMP) -d $@ > $(@:.elf=.list)
-
-irq_test.ea5.elf: crt0.o irq_test.o ea5.ld
-	$(LD) $(EA5_LDFLAGS) crt0.o irq_test.o -o $@
-	$(OBJDUMP) -d $@ > $(@:.elf=.list)
+# More specific than %.list, so an EA5 listing cannot build an EA5 cartridge.
+%.ea5.list: %.ea5.elf
+	$(OBJDUMP) -d $< > $@
 
 dump-%: %.elf
-	@echo "=== Sections ==="
-	$(READELF) -S $<
-	@echo ""
-	@echo "=== Symbols ==="
-	$(READELF) -s $<
-	@echo ""
-	@echo "=== Disassembly ==="
+	$(READELF) -S -s $<
 	$(OBJDUMP) -d $<
 
 hexdump-%: %.bin
 	xxd $< | head -20
 
 clean:
-	rm -f *.o *.elf *.bin *.cart *.rpk *.list *.ea5.elf *.ea5.bin *.img
+	rm -f *.o *.d *.elf *.bin *.cart *.rpk *.list *.img .build-config.json
+
+CONFIG_STAMP = .build-config.json
+CONFIG_ARGS = --value=$(call quote_config,CPPFLAGS=$(CPPFLAGS)) \
+              --value=$(call quote_config,CFLAGS=$(CFLAGS)) \
+              --value=$(call quote_config,ASFLAGS=$(ASFLAGS)) \
+              --value=$(call quote_config,LDFLAGS=$(LDFLAGS)) \
+              --value=$(call quote_config,EA5_LDFLAGS=$(EA5_LDFLAGS)) \
+              --value=$(call quote_config,STACK_SIZE=$(STACK_SIZE)) \
+              --value=$(call quote_config,EA5_BASE=$(EA5_BASE)) \
+              --value=$(call quote_config,EA5_MAX_SIZE=$(EA5_MAX_SIZE)) \
+              --tool=$(call quote_config,$(CC)) --tool=$(call quote_config,$(LD)) \
+              --tool=$(call quote_config,$(OBJCOPY)) --tool=$(call quote_config,$(OBJDUMP)) \
+              --file=$(call quote_config,$(BIN2RPK)) --file=$(call quote_config,$(BIN2EA5))
+CONFIG_OUTPUTS = $(OUTPUTS)
+CONFIG_PATTERNS = *.o *.d *.elf *.bin *.cart *.rpk *.list *.img
+include ../tools/build_config.mk
+-include $(wildcard *.d)
