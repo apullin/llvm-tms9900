@@ -6,9 +6,19 @@
  * at the beginning and discard any cartridge header sections.
  */
 
+/* Match cartridge startup's stack/heap boundary. Override with
+ * ld.lld --defsym=__stack_size=0x1000 when a larger C stack is required. */
+PROVIDE(__stack_size = 0x800);
+ASSERT(__stack_size >= 4 && __stack_size < 0x6000,
+       "stack reservation must be between 4 bytes and 24 KiB")
+ASSERT((__stack_size & 3) == 0, "stack reservation must be four-byte aligned")
+
 MEMORY {
-    RAM (rwx) : ORIGIN = 0xA000, LENGTH = 0x6000
+    RAM (rwx) : ORIGIN = 0xA000, LENGTH = 0x6000 - __stack_size
+    STACK (rw) : ORIGIN = 0x10000 - __stack_size, LENGTH = __stack_size
 }
+
+__stack_top = ORIGIN(STACK) + LENGTH(STACK) - 4;
 
 ENTRY(_start)
 
@@ -36,6 +46,12 @@ SECTIONS {
         *(COMMON)
         __bss_end = .;
     } > RAM
+
+    __heap_start = ALIGN(__bss_end, 2);
+    __heap_end = ORIGIN(STACK);
+    .stack (NOLOAD) : {
+        . += LENGTH(STACK);
+    } > STACK
 
     /DISCARD/ : {
         *(.cart_header)

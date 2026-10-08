@@ -13,7 +13,7 @@ _start:
 
 	; Set up the downward-growing stack in upper expansion RAM. The compiler
 	; ABI requires a four-byte boundary, separately from word alignment.
-	LI	R10, 0xFFFC
+	LI	R10, __stack_top
 
 	; Copy initialized data from ROM to RAM
 	; __data_load_start is the ROM source (LMA)

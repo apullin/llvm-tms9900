@@ -103,6 +103,44 @@ def main():
         assemble(start, start_obj)
         assemble(main_wrapper, wrapper_obj)
 
+        if args.filter in (None, "crt"):
+            # BSS fits the old 24 KiB maps but would overlap the reserved stack.
+            fixture = out / "overflow.s"
+            fixture.write_text(".text\n.globl check_startup\ncheck_startup:\nB *R11\n"
+                               ".bss\n.space 0x5801\n")
+            assemble(fixture, out / "overflow.o")
+            assemble(args.crt, out / "crt.o")
+            objects = [out / "crt.o", wrapper_obj, out / "overflow.o"]
+            for script in [ROOT / "cart_example/cart.ld", ROOT / "cart_example/ea5.ld"]:
+                result = subprocess.run([str(ld), "-T", str(script),
+                                         *[str(obj) for obj in objects],
+                                         "-o", str(out / "overflow.elf")], text=True,
+                                        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                passed = result.returncode != 0 and "region 'RAM'" in result.stderr and \
+                    "overflowed" in result.stderr
+                name = f"{script.name} rejects stack overlap"
+                count += 1
+                print(f"{name}: {'PASS' if passed else 'FAIL'}", flush=True)
+                if not passed:
+                    failures.append(name)
+
+            fixture.write_text(".text\n.globl check_startup\ncheck_startup:\nB *R11\n")
+            assemble(fixture, out / "small.o")
+            for script in [ROOT / "cart_example/cart.ld", ROOT / "cart_example/ea5.ld"]:
+                elf = out / "custom-stack.elf"
+                run([ld, "--defsym=__stack_size=0x1000", "-T", script,
+                     out / "crt.o", wrapper_obj, out / "small.o", "-o", elf])
+                symbols = {fields[2]: int(fields[0], 16)
+                           for line in run([args.llvm_bin / "llvm-nm", elf]).splitlines()
+                           if len(fields := line.split()) == 3 and fields[1].lower() != "u"}
+                passed = symbols["__heap_end"] == 0xf000 and \
+                    symbols["__stack_top"] == 0xfffc and symbols["__heap_start"] % 2 == 0
+                name = f"{script.name} configurable stack/heap boundary"
+                count += 1
+                print(f"{name}: {'PASS' if passed else 'FAIL'}", flush=True)
+                if not passed:
+                    failures.append(name)
+
         for opt in args.opt:
             if args.filter in (None, "peephole"):
                 test_obj, kernel_obj = out / "test.o", out / "kernel.o"

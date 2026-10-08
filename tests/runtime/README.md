@@ -29,7 +29,15 @@ Temporary objects and images are removed automatically.
 - **Startup:** the actual cartridge and EA5 scripts/startup initialize empty,
   one-, two-, and three-byte sections, including an odd ROM data source. BSS is
   prefilled with nonzero bytes, a canary after BSS must survive, and a C leaf
-  checks stack alignment and an i32 stack round trip.
+  checks stack alignment and an i32 stack round trip. Link checks reject static
+  storage overlapping the reserved stack and verify a configurable stack/heap
+  boundary in both maps.
+
+The demo maps reserve 2 KiB at the top of expansion RAM for the C stack. Use
+`ld.lld --defsym=__stack_size=0x1000` to reserve 4 KiB instead. They provide
+`__heap_start`/`__heap_end` for malloc and `__stack_top` for startup. This prevents
+static-storage/heap overlap with the reservation; runtime stack exhaustion
+still requires choosing a sufficient stack size for the program.
 
 The startup fixture includes a dummy cartridge header so objcopy's binary
 starts at `>6000`. Extending the simulator image to prefill BSS represents its
