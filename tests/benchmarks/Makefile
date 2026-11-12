@@ -17,16 +17,13 @@ SIZE     = $(LLVM_BIN)/llvm-size
 TARGET   = --target=tms9900
 OPT      ?= 2
 LTO      ?= 0
+LTO_LINKER_SCRIPTS ?= 0
 BUILTINS_MODE ?= prebuilt
-# -mno-relax-all needed at -O0 to prevent "fixup value out of range" on large functions
-ifeq ($(OPT),0)
-EXTRA_CFLAGS = -mno-relax-all
-endif
 ifeq ($(LTO),1)
-LTO_CFLAGS = -flto -flto-linker-scripts
-LTO_SUFFIX = -lto
+LTO_CFLAGS = -flto=full $(if $(filter 1,$(LTO_LINKER_SCRIPTS)),-flto-linker-scripts)
+LTO_SUFFIX = -lto$(if $(filter 1,$(LTO_LINKER_SCRIPTS)),-ls)
 LTO_OPT ?= $(OPT)
-LTO_LDFLAGS = --lto-O$(LTO_OPT) --lto-linker-scripts
+LTO_LDFLAGS = --lto-O$(LTO_OPT) $(if $(filter 1,$(LTO_LINKER_SCRIPTS)),--lto-linker-scripts)
 endif
 
 # C++ flags (freestanding, no exceptions/RTTI)
@@ -85,7 +82,7 @@ LOCAL_BUILTINS_CFLAGS = $(TARGET) -O$(OPT) -ffreestanding -fno-builtin -nostdlib
 SOFTFLOAT_DIR = $(ROOT)/libtms9900/builtins/softfloat
 SOFTFLOAT_SRCS = addsf3.c subsf3.c mulsf3.c divsf3.c negsf2.c \
                  comparesf2.c floatsisf.c floatunsisf.c fixsfsi.c \
-                 fixunssfsi.c
+                 fixunssfsi.c fenv.c
 SOFTFLOAT_OBJS = $(SOFTFLOAT_SRCS:%.c=$(BUILD)/sf_%.o)
 
 # Softfloat support (64-bit builtins, FP env stubs)
@@ -131,7 +128,7 @@ endif
 $(BUILD)/libbuiltins_asm.a: $(LOCAL_BUILTINS_ASM_OBJS) | $(BUILD)
 	$(AR) rcs $@ $^
 
-$(BUILD)/libbuiltins_rt.a: $(LOCAL_BUILTINS_RT_C_OBJS) | $(BUILD)
+$(BUILD)/libbuiltins_rt.a: $(LOCAL_BUILTINS_RT_C_OBJS) $(SOFTFLOAT_OBJS) | $(BUILD)
 	$(AR) rcs $@ $^
 
 # Startup object
@@ -183,8 +180,8 @@ $(BUILD)/string_torture.elf: $(BUILD)/bench_start.o $(BUILD)/string_torture.o $(
 $(BUILD)/bitops_torture.elf: $(BUILD)/bench_start.o $(BUILD)/bitops_torture.o $(BUILTINS) | $(BUILD)
 	$(LD) $(LDFLAGS) -o $@ $^
 
-# Float benchmarks: need softfloat + fp builtins + builtins
-$(BUILD)/float_torture.elf: $(BUILD)/bench_start.o $(BUILD)/float_torture.o $(BUILD)/fp32_builtins.o $(SOFTFLOAT_OBJS) $(BUILTINS) | $(BUILD)
+# Float benchmarks: soft-float is pulled on demand from $(BUILTINS) archive
+$(BUILD)/float_torture.elf: $(BUILD)/bench_start.o $(BUILD)/float_torture.o $(BUILTINS) | $(BUILD)
 	$(LD) $(LDFLAGS) -o $@ $^
 
 # C++ benchmarks: need cxxrt + builtins

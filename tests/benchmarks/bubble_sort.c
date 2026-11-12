@@ -1,7 +1,8 @@
-/* Bubble sort benchmark (ported from i8085 project)
+/* Bubble sort benchmark
  *
- * Sorts 16 int16_t values using bubble sort.
- * Exercises 16-bit signed comparisons, swaps, nested loops.
+ * Sorts 16 int16_t values using bubble sort from an opaque input pointer
+ * and verifies the complete sorted sequence.
+ * Exercises 16-bit signed comparisons, swaps, and nested loops.
  */
 #include <stdint.h>
 
@@ -13,12 +14,20 @@ static const int16_t input[16] = {
     -100, 500, 256, -256, 10000, -10000, 7, 3
 };
 
+static const int16_t expected[16] = {
+    -32768, -10000, -500, -256, -100, -1, 0, 3,
+    7, 42, 100, 256, 500, 1024, 10000, 32767
+};
+
 volatile int16_t output[16];
 
 int main(void) {
+    const int16_t *src = input;
+    __asm__ volatile("" : "+r"(src));
+
     int16_t arr[16];
     for (uint16_t i = 0; i < 16; i++)
-        arr[i] = input[i];
+        arr[i] = src[i];
 
     for (uint16_t i = 0; i < 15; i++) {
         for (uint16_t j = 0; j < 15 - i; j++) {
@@ -33,9 +42,11 @@ int main(void) {
     for (uint16_t i = 0; i < 16; i++)
         output[i] = arr[i];
 
-    if (arr[0] == -32768 && arr[15] == 32767)
-        halt_ok();
+    for (uint16_t i = 0; i < 16; i++) {
+        if (arr[i] != expected[i])
+            fail_loop();
+    }
 
-    fail_loop();
+    halt_ok();
     return 0;
 }

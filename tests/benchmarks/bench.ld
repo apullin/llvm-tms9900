@@ -22,3 +22,5 @@ SECTIONS {
   PROVIDE(__heap_start = _end);
   PROVIDE(__heap_end = 0xEFFE);
 }
+
+ASSERT(_end <= 0xF000, "Error: benchmark image overlaps workspace at 0xF000");

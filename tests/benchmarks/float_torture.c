@@ -1,18 +1,30 @@
-/* Float operations torture test (ported from i8085 project)
+/* Float operations torture test
  *
- * Exercises soft-float: negation, comparison, int<->float conversion,
- * addition, multiplication.
+ * Exercises IEEE-754 binary32 soft-float at runtime:
+ * negation, comparison (including NaN and signed zero), int<->float
+ * conversion, addition, subtraction, multiplication, and division.
  *
- * Uses native float type — compiler emits soft-float calls automatically.
+ * Opaque barriers prevent host compile-time constant folding so every
+ * operation genuinely executes on the TMS9900 across -O0..-Oz and LTO.
  *
- * Expected: 24 tests pass.
+ * Expected: 29 tests pass.
  */
 #include <stdint.h>
 
-/* Helper to create float from IEEE 754 bit pattern */
+static uint32_t opaque_u32(uint32_t x) {
+    uint16_t hi = (uint16_t)(x >> 16);
+    uint16_t lo = (uint16_t)x;
+    __asm__ volatile("" : "+r"(hi), "+r"(lo));
+    return ((uint32_t)hi << 16) | (uint32_t)lo;
+}
+
+static int32_t opaque_i32(int32_t x) {
+    return (int32_t)opaque_u32((uint32_t)x);
+}
+
 static float from_bits(uint32_t u) {
     union { uint32_t u; float f; } v;
-    v.u = u;
+    v.u = opaque_u32(u);
     return v.f;
 }
 
@@ -23,18 +35,21 @@ static uint32_t to_bits(float f) {
 }
 
 /* IEEE 754 single-precision constants */
-#define F_POS_ZERO  0x00000000U  /* +0.0  */
-#define F_NEG_ZERO  0x80000000U  /* -0.0  */
-#define F_POS_ONE   0x3F800000U  /* +1.0  */
-#define F_NEG_ONE   0xBF800000U  /* -1.0  */
-#define F_POS_TWO   0x40000000U  /* +2.0  */
-#define F_POS_THREE 0x40400000U  /* +3.0  */
-#define F_POS_SIX   0x40C00000U  /* +6.0  */
-#define F_POS_42    0x42280000U  /* +42.0 */
-#define F_POS_256   0x43800000U  /* +256.0 */
-#define F_QNAN      0x7FC00000U  /* quiet NaN */
+#define F_POS_ZERO  0x00000000UL  /* +0.0  */
+#define F_NEG_ZERO  0x80000000UL  /* -0.0  */
+#define F_POS_ONE   0x3F800000UL  /* +1.0  */
+#define F_NEG_ONE   0xBF800000UL  /* -1.0  */
+#define F_POS_TWO   0x40000000UL  /* +2.0  */
+#define F_NEG_TWO   0xC0000000UL  /* -2.0  */
+#define F_POS_THREE 0x40400000UL  /* +3.0  */
+#define F_POS_SIX   0x40C00000UL  /* +6.0  */
+#define F_NEG_SEVEN 0xC0E00000UL  /* -7.0  */
+#define F_POS_42    0x42280000UL  /* +42.0 */
+#define F_NEG_42    0xC2280000UL  /* -42.0 */
+#define F_POS_256   0x43800000UL  /* +256.0 */
+#define F_QNAN      0x7FC00000UL  /* quiet NaN */
 
-#define TOTAL_TESTS 24
+#define TOTAL_TESTS 29
 
 __attribute__((noinline)) static void halt_ok(void) { __asm__ volatile("idle"); }
 __attribute__((noinline)) static void fail_loop(void) { for (;;) {} }
@@ -42,7 +57,7 @@ __attribute__((noinline)) static void fail_loop(void) { for (;;) {} }
 volatile uint16_t result;
 
 int main(void) {
-    volatile uint16_t pass = 0;
+    uint16_t pass = 0;
 
     float pos_zero  = from_bits(F_POS_ZERO);
     float neg_zero  = from_bits(F_NEG_ZERO);
@@ -52,90 +67,47 @@ int main(void) {
     float pos_three = from_bits(F_POS_THREE);
     float pos_six   = from_bits(F_POS_SIX);
     float pos_42    = from_bits(F_POS_42);
-    float pos_256   = from_bits(F_POS_256);
+    float neg_42    = from_bits(F_NEG_42);
     float qnan      = from_bits(F_QNAN);
 
     /* ---- Negation tests ---- */
-
-    /* 1. neg(+1.0) == -1.0 */
     if (to_bits(-pos_one) == F_NEG_ONE) pass++;
-
-    /* 2. neg(-1.0) == +1.0 */
     if (to_bits(-neg_one) == F_POS_ONE) pass++;
-
-    /* 3. neg(+0.0) == -0.0 */
     if (to_bits(-pos_zero) == F_NEG_ZERO) pass++;
 
     /* ---- Comparison tests ---- */
-
-    /* 4. 1.0 < 2.0 */
     if (pos_one < pos_two) pass++;
-
-    /* 5. 2.0 > 1.0 */
     if (pos_two > pos_one) pass++;
-
-    /* 6. 1.0 == 1.0 */
-    if (pos_one == pos_one) pass++;
-
-    /* 7. -1.0 < 1.0 */
+    if (pos_one == from_bits(F_POS_ONE)) pass++;
     if (neg_one < pos_one) pass++;
-
-    /* 8. NaN != NaN (unordered) */
+    if (pos_zero == neg_zero) pass++;
     if (!(qnan == qnan)) pass++;
-
-    /* 9. NaN is not less than 1.0 */
     if (!(qnan < pos_one)) pass++;
-
-    /* 10. NaN is not greater than 1.0 */
     if (!(qnan > pos_one)) pass++;
-
-    /* 11. 1.0 is ordered with 2.0 */
-    if (pos_one == pos_one) pass++;
+    if (!(pos_one < pos_two && pos_two < pos_one)) pass++;
 
     /* ---- Int->float conversion tests ---- */
-
-    /* 12. (float)0 == 0.0 */
-    if (to_bits((float)(int32_t)0) == F_POS_ZERO) pass++;
-
-    /* 13. (float)1 == 1.0 */
-    if (to_bits((float)(int32_t)1) == F_POS_ONE) pass++;
-
-    /* 14. (float)(-1) == -1.0 */
-    if (to_bits((float)(int32_t)-1) == F_NEG_ONE) pass++;
-
-    /* 15. (float)42 == 42.0 */
-    if (to_bits((float)(int32_t)42) == F_POS_42) pass++;
-
-    /* 16. (float)(unsigned)0 == 0.0 */
-    if (to_bits((float)(uint32_t)0) == F_POS_ZERO) pass++;
-
-    /* 17. (float)(unsigned)1 == 1.0 */
-    if (to_bits((float)(uint32_t)1) == F_POS_ONE) pass++;
-
-    /* 18. (float)(unsigned)256 == 256.0 */
-    if (to_bits((float)(uint32_t)256) == F_POS_256) pass++;
+    if (to_bits((float)opaque_i32(0)) == F_POS_ZERO) pass++;
+    if (to_bits((float)opaque_i32(1)) == F_POS_ONE) pass++;
+    if (to_bits((float)opaque_i32(-1)) == F_NEG_ONE) pass++;
+    if (to_bits((float)opaque_i32(42)) == F_POS_42) pass++;
+    if (to_bits((float)opaque_u32(0)) == F_POS_ZERO) pass++;
+    if (to_bits((float)opaque_u32(1)) == F_POS_ONE) pass++;
+    if (to_bits((float)opaque_u32(256)) == F_POS_256) pass++;
 
     /* ---- Float->int conversion tests ---- */
-
-    /* 19. (int)1.0 == 1 */
     if ((int32_t)pos_one == 1) pass++;
-
-    /* 20. (int)(-1.0) == -1 */
     if ((int32_t)neg_one == -1) pass++;
-
-    /* 21. (unsigned)1.0 == 1 */
     if ((uint32_t)pos_one == 1) pass++;
-
-    /* 22. (unsigned)42.0 == 42 */
     if ((uint32_t)pos_42 == 42) pass++;
 
-    /* ---- Arithmetic tests ---- */
-
-    /* 23. 1.0 + 2.0 == 3.0 */
+    /* ---- Arithmetic tests (add, sub, mul, div) ---- */
     if (to_bits(pos_one + pos_two) == F_POS_THREE) pass++;
-
-    /* 24. 2.0 * 3.0 == 6.0 */
+    if (to_bits(pos_three - pos_one) == F_POS_TWO) pass++;
+    if (to_bits(pos_one - pos_three) == F_NEG_TWO) pass++;
     if (to_bits(pos_two * pos_three) == F_POS_SIX) pass++;
+    if (to_bits(pos_six / pos_two) == F_POS_THREE) pass++;
+    if (to_bits(neg_42 / pos_six) == F_NEG_SEVEN) pass++;
 
     result = pass;
 
