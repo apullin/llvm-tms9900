@@ -90,11 +90,11 @@ grep -v '^\s*\.text' output.s | grep -v '^\s*\.p2align' > clean.s
 
 ### 5. No 32-bit Multiplication/Division
 
-**Status**: OPEN
-**Severity**: Low - rarely needed on TMS9900
+**Status**: FIXED
+**Severity**: Was Low
 
 **Description**:
-32-bit multiply and divide operations are not implemented. The TMS9900 MPY instruction only provides 16x16->32 multiplication.
+32-bit multiply, divide, modulo, shifts, and 64-bit arithmetic are fully implemented via inline `MPY` partial products (`UMUL_LOHI`/`MULHU`) and hand-tuned `libtms9900` assembly routines (`__mulsi3`, `__divsi3`, `__udivsi3`, `__modsi3`, `__umodsi3`, `__ashlsi3`, `__lshrsi3`, `__ashrsi3`).
 
 ---
 
@@ -102,11 +102,12 @@ grep -v '^\s*\.text' output.s | grep -v '^\s*\.p2align' > clean.s
 
 | Test | Status | Notes |
 |------|--------|-------|
-| cart.c | WORKS | Basic cartridge with VDP writes |
-| ball2.c | WORKS | Signed comparison bug fixed |
-| minimum_working_example | WORKS | Basic function calls and returns |
-| test_all_cmp (24 tests) | WORKS | All signed/unsigned comparisons pass |
-| benchmark suite (9 programs) | WORKS | All halt correctly at O2 |
+| cart_example (11 demos) | WORKS | All cartridge/EA5 builds fit and pass runtime checks |
+| benchmark suite (20 programs) | WORKS | 160/160 pass across `-O0..-Oz` and full LTO |
+| CoreMark / MiniLZO / sprintf | WORKS | All pass across `-O0..-Oz` |
+| Csmith (100 programs) | WORKS | 100% consistent across `-O0`, `-O1`, `-O2`, `-Oz` |
+| compiler-rt (42 suites) | WORKS | 42/42 pass across `-O0..-O2` |
+| LLVM/Clang/LLD lit (167 tests) | WORKS | 167/167 pass |
 
 ---
 
@@ -144,10 +145,11 @@ Available unsigned comparison jumps:
 1. **LLVM Build**: The TMS9900 backend must be built first:
    ```bash
    cd llvm-project/build
-   cmake -G Ninja -DLLVM_TARGETS_TO_BUILD="TMS9900" \
+   cmake -G Ninja -DLLVM_TARGETS_TO_BUILD="" \
+         -DLLVM_EXPERIMENTAL_TARGETS_TO_BUILD="TMS9900" \
          -DLLVM_ENABLE_PROJECTS="clang;lld" \
          -DCMAKE_BUILD_TYPE=Release ../llvm
-   ninja
+   ninja clang lld llc llvm-mc llvm-objdump llvm-objcopy llvm-ar llvm-size
    ```
 
 2. **xdt99 Tools**: For assembling and creating disk/cartridge images (see xdt99 section below)

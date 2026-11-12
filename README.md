@@ -242,13 +242,13 @@ Hand-coded TMS9900 assembly for performance-critical operations:
 
 | Category | Functions |
 |----------|-----------|
-| 32-bit integer | `__mulsi3`, `__divsi3`, `__udivsi3`, `__modsi3`, `__umodsi3` |
-| 32-bit shifts | `__ashlsi3`, `__lshrsi3`, `__ashrsi3` |
-| 64-bit integer | `__muldi3`, `__divdi3`, `__udivdi3`, `__moddi3`, `__umoddi3`, `__udivmoddi4` |
-| Memory | `memcpy`, `memset`, `memmove` (auto-increment optimized) |
+| 32-bit integer | `__mulsi3`, `__divsi3`, `__udivsi3`, `__modsi3`, `__umodsi3`, `__divmodsi4`, `__udivmodsi4` |
+| 32-bit shifts | `__ashlsi3`, `__lshrsi3`, `__ashrsi3` (hardware `R0`-count accelerated) |
+| 64-bit integer | `__muldi3`, `__divdi3`, `__udivdi3`, `__moddi3`, `__umoddi3`, `__udivmoddi4`, `__ashldi3`, `__lshrdi3`, `__ashrdi3` |
+| Memory & string | `memcpy`, `memset`, `memmove`, `strlen`, `strcmp`, `memcmp` (`*R+` / `CB` auto-increment optimized) |
 | Soft-float | `__addsf3`, `__subsf3`, `__mulsf3`, `__divsf3`, comparisons, conversions |
 
-The 32-bit division includes a hardware `DIV` fast path for 16-bit divisors. Memory routines exploit the TMS9900's `*R+` auto-increment addressing mode.
+The 32-bit division uses 1- or 2-`DIV` hardware fast paths for all 16-bit divisors and a 16-step Carry loop for 32-bit divisors. Memory and string routines exploit the TMS9900's `*R+` auto-increment addressing mode.
 
 ### Math Library (`libm/`)
 
@@ -282,46 +282,47 @@ a non-leaf callee saves its incoming link separately before making calls.
 
 ### Benchmark Suite
 
-20 programs (14 C + 6 C++), all passing at every optimization level:
+20 programs (14 C + 6 C++), all passing across `-O0`, `-O1`, `-O2`, `-O3`, `-Os`, `-Oz`, and full LTO (`160/160`):
 
-| Benchmark | Description | -O0 | -O1 | -O2 | -O0 | -O1 | -O2 |
-|-----------|-------------|----:|----:|----:|----:|----:|----:|
-| | | Code | Code | Code | Cycles | Cycles | Cycles |
-| fib | Fibonacci | 184 | 108 | 282 | 7.1K | 2.2K | 1.5K |
-| bubble_sort | Array sort | 440 | 194 | 392 | 117K | 26.9K | 21.6K |
-| deep_recursion | Tail-call recursion | 218 | 108 | 144 | 45.6K | 6.3K | 766 |
-| crc32 | CRC-32 hash | 514 | 220 | 418 | 204K | 111K | 77.5K |
-| q7_8_matmul | Fixed-point matrix multiply | 392 | 134 | 134 | 9.9K | 512 | 512 |
-| json_parse | JSON tokenizer | 2.7K | 1.0K | 978 | 115K | 22.5K | 20.4K |
-| string_torture | String operations | 740 | 500 | 502 | 34.0K | 12.3K | 11.5K |
-| float_torture | IEEE 754 soft-float | 11.4K | 8.6K | 8.6K | 48.0K | 1.7K | 1.7K |
-| bitops_torture | popcount, bswap, clz, ctz | 3.3K | 2.1K | 2.1K | 72.5K | 27.1K | 27.1K |
-| vertex3d | 3D vertex transforms | 1.1K | 424 | 852 | 95.0K | 57.2K | 56.0K |
-| huffman | Huffman codec | 3.6K | 1.4K | 1.3K | 1.86M | 554K | 523K |
-| long_torture | 30 tests of 32-bit ops | 3.3K | 1.8K | 1.8K | 41.2K | 19.8K | 19.8K |
-| heap4 | FreeRTOS-style allocator | 4.2K | 1.8K | 2.1K | 401K | 125K | 121K |
-| i64_torture | 64-bit arithmetic | 9.1K | 7.1K | 7.1K | 374K | 349K | 349K |
-| cpp_test | Ctors, vtables, templates | 2.1K | 510 | 510 | 15.5K | 3.0K | 3.0K |
-| lambda_test | Lambda expressions | 18.9K | 3.1K | 2.9K | 66.5K | 5.9K | 4.0K |
-| mi_test | Multiple inheritance | 7.5K | 1.9K | 1.7K | 63.7K | 9.8K | 9.6K |
-| cpp_adv_test | Move, forwarding, variadic | 4.8K | 1.2K | 1.1K | 92.4K | 16.9K | 17.8K |
-| stl_test | vector, string | 54.1K | 16.5K | 15.4K | 716K | 34.2K | 30.8K |
-| stl_util_test | tuple, optional, unique_ptr | 12.0K | 1.6K | 1.5K | 188K | 10.5K | 9.1K |
+| Benchmark | Description | -O0 | -O1 | -O2 | -Oz | -O0 | -O1 | -O2 |
+|-----------|-------------|----:|----:|----:|----:|----:|----:|----:|
+| | | Code | Code | Code | Code | Cycles | Cycles | Cycles |
+| fib | Fibonacci | 166 | 108 | 108 | 112 | 4.7K | 1.7K | 1.7K |
+| bubble_sort | Array sort | 408 | 186 | 184 | 196 | 78.1K | 21.7K | 19.1K |
+| deep_recursion | Stack + tail recursion | 374 | 196 | 206 | 192 | 72.0K | 22.6K | 24.1K |
+| crc32 | CRC-32 hash | 458 | 214 | 386 | 188 | 173K | 67.4K | 40.4K |
+| q7_8_matmul | Fixed-point matrix multiply | 596 | 506 | 506 | 446 | 9.6K | 4.5K | 4.5K |
+| json_parse | JSON tokenizer | 2.2K | 1.0K | 944 | 878 | 74.2K | 18.6K | 16.1K |
+| string_torture | String & memory ops | 1.4K | 1.3K | 1.3K | 1.2K | 22.4K | 16.8K | 16.8K |
+| float_torture | IEEE 754 soft-float | 8.6K | 8.0K | 8.0K | 8.0K | 83.5K | 62.1K | 62.1K |
+| bitops_torture | popcount, bswap, clz, ctz | 4.6K | 3.2K | 3.2K | 2.1K | 65.9K | 21.0K | 21.0K |
+| vertex3d | 3D vertex transforms | 744 | 362 | 362 | 370 | 68.6K | 34.9K | 34.9K |
+| huffman | Huffman codec | 2.9K | 1.3K | 1.2K | 1.1K | 1.18M | 406K | 381K |
+| long_torture | 30 tests of 32-bit ops | 3.1K | 1.7K | 1.7K | 1.7K | 35.1K | 15.9K | 15.9K |
+| heap4 | FreeRTOS-style allocator | 3.9K | 1.7K | 1.8K | 1.8K | 262K | 97.4K | 96.4K |
+| i64_torture | 64-bit arithmetic | 8.4K | 6.6K | 6.6K | 6.3K | 218K | 196K | 196K |
+| cpp_test | Ctors, vtables, templates | 2.0K | 532 | 532 | 544 | 12.6K | 2.6K | 2.6K |
+| lambda_test | Lambda expressions | 14.9K | 3.2K | 2.9K | 2.4K | 48.8K | 4.4K | 3.2K |
+| mi_test | Multiple inheritance | 7.5K | 2.5K | 2.1K | 2.2K | 49.6K | 10.0K | 9.2K |
+| cpp_adv_test | Move, forwarding, variadic | 4.6K | 1.4K | 1.2K | 1.9K | 73.3K | 14.9K | 15.0K |
+| stl_test | vector, string | 40.3K | 20.2K | 19.3K | 16.9K | 268K | 24.7K | 22.4K |
+| stl_util_test | tuple, optional, unique_ptr | 10.7K | 1.9K | 1.3K | 2.2K | 135K | 11.1K | 5.8K |
 
-Code sizes in bytes. Cycle counts from tms9900-trace emulator.
+Code sizes (`.text`) in bytes. Zero-wait CPU cycle counts from `tms9900-trace` (`C + 0·M` Data Manual Table 3 + Table A/B model). Full LTO shrinks `stl_test` further to `8.0K` bytes at `-Oz`.
 
 ### Stress Tests
 
 | Test | Result | Notes |
 |------|--------|-------|
-| **Csmith** (100 programs) | 100/100 self-consistent | O0=O1=O2 where all complete |
-| **CoreMark** | O0–Os | ~1.3M cycles at O2 |
-| **MiniLZO** | O1–Os | Lossless compression + decompression round-trip |
-| **sprintf** (35 tests) | 35/35 at O0–O2 | Variadic functions, format strings |
+| **Csmith** (100 programs) | 100% self-consistent | `O0 = O1 = O2 = Oz` across all completing programs |
+| **CoreMark** | O0–Oz | `11.5K` B / `910K` insns / `14.5M` cycles at `-O2` (`7.2K` B at `-Oz`) |
+| **MiniLZO** | O0–Oz | `5.9K` B / `14.4M` cycles at `-O2`, lossless round-trip |
+| **sprintf** (35 tests) | 35/35 at O0–Oz | `4.8K` B / `282K` cycles at `-O2` |
+| **compiler-rt** (42 suites) | 42/42 at O0–O2 | Unit tests for integer and IEEE-754 builtins |
 
 ### LLVM Lit Tests
 
-98 tests (82 CodeGen + 16 MC), all passing.
+167 in-tree tests across LLVM CodeGen, MC, Clang, and LLD — all passing.
 
 ## Assembler
 
