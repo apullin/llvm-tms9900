@@ -1,56 +1,44 @@
 ; libtms9900 - memset
 ; void *memset(void *dest, int c, size_t n)
 ;
-; Input:  R0 = dest, R1 = fill char (low byte), R2 = n (byte count)
-; Output: R0 = dest (original)
-;
-; Converts int c to unsigned char, then duplicates it for word-aligned fills.
-; Uses MOV R0, *R3+ to fill 2 bytes per iteration.
+; Input:  R0 = dest, R1 = fill char, R2 = n (byte count)
+; Output: R0 = dest (preserved in R0 throughout)
 
        .text
        .global memset
 
 memset:
-; Save original dest for return value
-       MOV  R0,R4             ; R4 = original dest (return value)
-       MOV  R0,R3             ; R3 = working dest pointer
-
-; Early exit for zero length
-       CI   R2,0
+       MOV  R2,R2
        JEQ  .Ldone
 
-; C requires conversion to unsigned char, regardless of the int's high byte.
-       ANDI R1,0x00FF
-; Create word fill value: 0x00XX -> 0xXXXX
-       MOV  R1,R0
-       SWPB R0                ; R0 = 0xXX00
-       SOC  R1,R0             ; R0 = 0xXXXX (OR in low byte)
+       MOV  R0,R3             ; R3 = working dest pointer
+       ANDI R1,0x00FF         ; C requires unsigned char conversion
+       MOV  R1,R4
+       SWPB R4                ; R4 = 0xXX00
+       SOC  R1,R4             ; R4 = 0xXXXX
 
-; Handle leading odd byte to align
+; Handle leading odd byte to word-align
        MOV  R3,R5
        ANDI R5,1
        JEQ  .Lwords
-       MOVB R0,*R3+           ; fill odd byte (MOVB stores high byte = XX)
+       MOVB R4,*R3+
        DEC  R2
        JEQ  .Ldone
 
-; Word fill loop (2 bytes per iteration)
 .Lwords:
        MOV  R2,R5
        SRL  R5,1              ; R5 = word count
        JEQ  .Ltail
 
 .Lword_loop:
-       MOV  R0,*R3+           ; fill word, dest advances by 2
+       MOV  R4,*R3+
        DEC  R5
        JNE  .Lword_loop
 
-; Handle trailing odd byte
 .Ltail:
        ANDI R2,1
        JEQ  .Ldone
-       MOVB R0,*R3            ; fill last byte (MOVB stores high byte = XX)
+       MOVB R4,*R3
 
 .Ldone:
-       MOV  R4,R0             ; return original dest
        B    *R11

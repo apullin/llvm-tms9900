@@ -63,14 +63,14 @@ endif
 
 # Builtins sources for local build mode
 BUILTINS_ASM_SRCS = mul32.S div32.S shift32.S memcpy.S memset.S memmove.S \
-                    bswapsi2.S clzsi2.S ctzsi2.S ashldi3.S negdi2.S \
+                    string_ops.S bswapsi2.S clzsi2.S ctzsi2.S ashldi3.S negdi2.S \
                     cmpdi2.S clzdi2.S ctzdi2.S ffssi2.S paritysi2.S \
                     popcountsi2.S bswapdi2.S absvsi2.S absvdi2.S \
                     addvsi3.S addvdi3.S mulvsi3.S divmodsi4.S
 BUILTINS_I64_SRCS = i64/muldi3.c i64/udivmoddi4.c i64/divdi3.c i64/udivdi3.c \
                     i64/moddi3.c i64/umoddi3.c
 BUILTINS_ARITH_C_SRCS = mulvdi3.c mulosi4.c
-BUILTINS_RT_C_SRCS = malloc.c string_utils.c
+BUILTINS_RT_C_SRCS = malloc.c string_utils.c abort.c
 
 LOCAL_BUILTINS_ASM_OBJS = $(patsubst %.S,$(BUILD)/builtins/%.o,$(BUILTINS_ASM_SRCS))
 LOCAL_BUILTINS_I64_OBJS = $(patsubst %.c,$(BUILD)/builtins/%.o,$(BUILTINS_I64_SRCS))

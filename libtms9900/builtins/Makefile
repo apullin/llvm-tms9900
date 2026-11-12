@@ -17,7 +17,7 @@ RT_CFLAGS = $(CFLAGS)
 
 # Assembly source files (32-bit builtins + memops + bitops)
 ASM_SRCS = mul32.S div32.S shift32.S memcpy.S memset.S memmove.S \
-           bswapsi2.S clzsi2.S ctzsi2.S
+           string_ops.S bswapsi2.S clzsi2.S ctzsi2.S
 
 # Assembly source files: 64-bit builtins + extended 32-bit ops
 # (replacing all compiler-rt C implementations)
@@ -43,7 +43,7 @@ SOFTFLOAT_SRCS = softfloat/addsf3.c softfloat/subsf3.c \
                  softfloat/fenv.c
 
 # C source files (runtime support)
-RT_SRCS = malloc.c string_utils.c
+RT_SRCS = malloc.c string_utils.c abort.c
 
 # Object files
 ASM_OBJS = $(ASM_SRCS:.S=.o)
@@ -86,6 +86,9 @@ $(BUILD)/malloc.o: malloc.c | $(BUILD)
 	$(CC) $(RT_CFLAGS) -MMD -MP -MF $(@:.o=.d) -o $@ $<
 
 $(BUILD)/string_utils.o: string_utils.c | $(BUILD)
+	$(CC) $(RT_CFLAGS) -MMD -MP -MF $(@:.o=.d) -o $@ $<
+
+$(BUILD)/abort.o: abort.c | $(BUILD)
 	$(CC) $(RT_CFLAGS) -MMD -MP -MF $(@:.o=.d) -o $@ $<
 
 $(BUILD)/%.o: %.c | $(BUILD)
