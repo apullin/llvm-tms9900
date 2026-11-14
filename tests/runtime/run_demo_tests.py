@@ -28,7 +28,7 @@ def main():
     parser.add_argument("--opt", nargs="+", choices=["0", "1", "2", "3", "s", "z"],
                         default=["0", "1", "2", "3", "s", "z"])
     parser.add_argument("--build-all", action="store_true",
-                        help="Also build and verify every distributed format at default -O3")
+                        help="Also build and verify every distributed format with the demo defaults")
     args = parser.parse_args()
     tools = args.llvm_bin.resolve()
     failures = []
@@ -38,7 +38,7 @@ def main():
         demos = root / "cart_example"
         demos.mkdir()
         (root / "tools").symlink_to(ROOT / "tools", target_is_directory=True)
-        for pattern in ["Makefile", "*.ld", "*.c", "*.s", "*.S"]:
+        for pattern in ["Makefile", "*.ld", "*.c", "*.h", "*.s", "*.S"]:
             for source in args.demo_dir.glob(pattern):
                 shutil.copy2(source, demos / source.name)
         for name in ["bin2ea5.py", "bin2rpk.py"]:
@@ -89,6 +89,15 @@ def main():
                           and ea5[:2] == b"\0\0"
                           and int.from_bytes(ea5[2:4], "big") == len(ea5)
                           and ea5[4:6] == b"\xa0\0" and ea5[6:] == ram_payload)
+                symbols = {fields[2]: int(fields[0], 16)
+                           for line in run([tools / "llvm-nm", binary.with_suffix(".elf")]).splitlines()
+                           if len(fields := line.split()) == 3 and fields[1].lower() != "u"}
+                entry = int.from_bytes(payload[0x12:0x14], "big")
+                passed = passed and entry == symbols["_start"]
+                if binary.stem == "life3_2x":
+                    passed = passed and payload[0x14] == 16 and payload[0x15:0x25] == b"GAME OF LIFE 0.2"
+                else:
+                    passed = passed and entry == 0x6024
                 count += 1
                 print(f"{binary.stem} distribution: {'PASS' if passed else 'FAIL'} "
                       f"({len(payload)} ROM bytes)", flush=True)

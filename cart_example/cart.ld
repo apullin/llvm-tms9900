@@ -32,8 +32,9 @@ SECTIONS {
         *(.cart_header)
     } > ROM
 
-    /* Entry point at 0x6024 (referenced by header) */
-    .cart_entry 0x6024 : {
+    /* Existing demos point to 0x6024. Longer headers use a relocated _start
+     * pointer and move entry forward to the next word boundary. */
+    .cart_entry ALIGN(MAX(0x6024, .), 2) : {
         *(.cart_entry)
     } > ROM
 

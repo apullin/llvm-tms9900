@@ -364,13 +364,29 @@ loader in js99er for these outputs. The `.img` is a separate, single-segment
 EA5 RAM executable; it uses the EA5 map and is not a cartridge. `.elf` and
 disassembly `.list` files are retained for inspection.
 
-Default compilation is `-O3`. Override `CFLAGS` on the make command line to
-compare another optimization level. Flag, compiler, converter and header
+Life3 appears as `GAME OF LIFE 0.2` in the TI menu. Its opening screen shows
+`V0.2  OCT 2026` and the controls; press **SPACE** to start. **Z/X/C/V/B**
+restart from denser to sparser seeds and remember that setting for **R**
+(restart). **D** toggles red dirty-tile highlighting, **F** takes a purple
+snapshot of clean tiles, and **1–9** add entropy for later reseeding.
+**N** adds scattered live cells to the running board (up to 384 picks, about
+3%); **M** adds a randomly placed, half-filled disk 25–47 cells across
+(50–94 displayed pixels).
+These additions preserve existing live cells and wrap around the toroidal board.
+
+Default compilation is `-O3`, except `life3_2x` uses `-O2`: its assembly update
+dominates runtime, and `-O2` saves ROM with almost identical speed. Use
+`make LIFE3_OPT=-O3 life3_2x.rpk` to compare, or override `CFLAGS` on the make
+command line to select an optimization level for every demo. Flag, compiler, converter and header
 changes are tracked, so a partial rebuild cannot reuse artifacts from another
 configuration; `make -n` remains read-only. Life's keyboard demos rely on the
 TI console ROM, and `irq_test` polls its VBlank counter rather than installing
 a new interrupt handler. Their visual/keyboard behavior needs a TI emulator or
-hardware; the optional CPU simulator tests verify startup and container builds.
+hardware; the optional CPU simulator tests verify startup, container builds,
+Life board updates and the byte stream sent to the VDP.
+The Life3 cartridge fits 8 KiB with these defaults. Explicit optimization
+overrides such as `-O0` or `-O3` can exceed the ROM limit; use the EA5 `.img`
+target for those levels.
 
 Cartridge and EA5 maps reserve 2 KiB of upper expansion RAM for the C stack,
 with static storage and the bump allocator's heap below it. Increase the

@@ -78,7 +78,9 @@ const uint8_t cart_header[] = {
 #error "CELL_H must be a multiple of 4 cells (tile height)."
 #endif
 
-#define LIFE_SEED_DENSITY 70
+/* Block acceptance uses an 8-bit threshold, not a percentage: 70/256
+ * (about 27%) before pixel dropout. Z/X/C/V/B select 70/60/50/40/30. */
+#define LIFE_SEED_THRESHOLD 70
 #define LIFE_SEED_BLOCK_SIZE 4
 #define LIFE_SEED_EDGE_BLOCKS 1
 #define LIFE_SEED_DROPOUT_PCT 20
@@ -218,6 +220,21 @@ static uint16_t rng_next(void) {
     return rng_state;
 }
 
+/* Rejection sampling works for non-power-of-two dimensions such as 96 rows.
+ * Callers supply a nonzero bound no greater than 256. */
+static uint16_t rng_below(uint16_t bound) {
+    uint16_t mask = 1;
+    uint16_t value;
+    while (mask < bound) {
+        mask <<= 1;
+    }
+    --mask;
+    do {
+        value = (uint16_t)(rng_next() & mask);
+    } while (value >= bound);
+    return value;
+}
+
 /* ===== BOARD ===== */
 static uint8_t board_a[CELL_H][CELL_ROW_BYTES] __attribute__((aligned(2)));
 static uint8_t board_b[CELL_H][CELL_ROW_BYTES] __attribute__((aligned(2)));
@@ -235,7 +252,7 @@ static uint8_t debug_dirty_enabled;
 static uint8_t debug_snapshot_pending;
 static uint8_t debug_key_prev;
 static uint16_t entropy;
-static uint8_t seed_density = LIFE_SEED_DENSITY;
+static uint8_t seed_threshold = LIFE_SEED_THRESHOLD;
 static volatile uint8_t * const kbd_device = (volatile uint8_t *)0x8374;
 static volatile uint8_t * const vdp_counter = (volatile uint8_t *)0x8379;
 static uint8_t frame_prev;
@@ -356,7 +373,12 @@ static void seed_block(uint8_t (*b)[CELL_ROW_BYTES], uint16_t x0, uint16_t y0,
             if (dropout_threshold && (uint8_t)rng_next() < dropout_threshold) {
                 continue;
             }
-            set_cell(b, (uint16_t)(x0 + x), (uint16_t)(y0 + y));
+            /* Wrap every cell, not just the block's origin. */
+            uint16_t cell_x = (uint16_t)(x0 + x);
+            uint16_t cell_y = (uint16_t)(y0 + y);
+            if (cell_x >= CELL_W) cell_x -= CELL_W;
+            if (cell_y >= CELL_H) cell_y -= CELL_H;
+            set_cell(b, cell_x, cell_y);
         }
     }
 }
@@ -392,7 +414,7 @@ static uint16_t life_next_word(uint16_t u_left, uint16_t uC, uint16_t u_right,
                       (uint16_t)(bit0 | mC));
 }
 
-static void seed_board(uint8_t (*b)[CELL_ROW_BYTES], uint8_t density) {
+static void seed_board(uint8_t (*b)[CELL_ROW_BYTES], uint8_t threshold) {
     uint16_t x;
     uint16_t y;
     uint16_t x_offset = (uint16_t)(rng_next() & (LIFE_SEED_BLOCK_SIZE - 1));
@@ -410,7 +432,7 @@ static void seed_board(uint8_t (*b)[CELL_ROW_BYTES], uint8_t density) {
             if (x_pos >= CELL_W) {
                 x_pos = (uint16_t)(x_pos - CELL_W);
             }
-            if ((uint8_t)rng_next() < density) {
+            if ((uint8_t)rng_next() < threshold) {
                 seed_block(b, x_pos, y_pos, LIFE_SEED_DROPOUT_THRESHOLD);
             }
         }
@@ -419,8 +441,8 @@ static void seed_board(uint8_t (*b)[CELL_ROW_BYTES], uint8_t density) {
 #if LIFE_SEED_EDGE_BLOCKS
     {
         uint16_t mask = (uint16_t)(~(LIFE_SEED_BLOCK_SIZE - 1));
-        uint16_t edge_x = (uint16_t)((rng_next() & (CELL_W - 1)) & mask);
-        uint16_t edge_y = (uint16_t)((rng_next() & (CELL_H - 1)) & mask);
+        uint16_t edge_x = (uint16_t)(rng_below(CELL_W) & mask);
+        uint16_t edge_y = (uint16_t)(rng_below(CELL_H) & mask);
         seed_block(b, 0, edge_y, LIFE_SEED_DROPOUT_THRESHOLD);
         seed_block(b, (uint16_t)(CELL_W - LIFE_SEED_BLOCK_SIZE), edge_y,
                    LIFE_SEED_DROPOUT_THRESHOLD);
@@ -650,7 +672,8 @@ static void mark_all_dirty(void) {
     }
 }
 
-static void vdp_write_dirty_patterns(uint8_t (*b)[CELL_ROW_BYTES]) {
+/* Keep the globally named trace labels unique when called from init and main. */
+static void __attribute__((noinline)) vdp_write_dirty_patterns(uint8_t (*b)[CELL_ROW_BYTES]) {
     /* Tracepoint label for draw timing (tms9900-trace). */
     asm volatile(
         ".globl life_draw_begin\n"
@@ -875,6 +898,7 @@ static void vdp_debug_clean_snapshot_clear(void) {
             vdp_set_tile_color((uint16_t)(tile_row_start + ty),
                                (uint16_t)(tile_col_start + tx),
                                color_normal);
+            dirty_prev[ty][tx] = 0;
         }
     }
     debug_snapshot_pending = 0;
@@ -887,7 +911,7 @@ static void reseed_board(uint8_t (*b)[CELL_ROW_BYTES]) {
             rng_state = 0x1D2Bu;
         }
     }
-    seed_board(b, seed_density);
+    seed_board(b, seed_threshold);
     build_active_tiles(b);
     mark_all_dirty();
 }
@@ -903,7 +927,7 @@ void main(void) {
     }
     vdp_disable_sprites();
 
-    seed_board(cur, LIFE_SEED_DENSITY);
+    seed_board(cur, LIFE_SEED_THRESHOLD);
     build_active_tiles(cur);
     if (LIFE_DRAW_BORDER) {
         vdp_write_border_tiles();
@@ -913,6 +937,12 @@ void main(void) {
     vdp_display_on();
 
     for (;;) {
+#if LIFE_DEBUG_DIRTY
+        /* The F-key snapshot remains visible until the next generation. */
+        if (debug_snapshot_pending) {
+            vdp_debug_clean_snapshot_clear();
+        }
+#endif
         uint8_t (*tmp)[CELL_ROW_BYTES] = cur;
         cur = next;
         next = tmp;
@@ -943,19 +973,19 @@ void main(void) {
                     entropy = (uint16_t)(entropy + (add * 0x1111u));
                     entropy ^= (uint16_t)((entropy << 5) | (entropy >> 11));
                 } else if (key == 'Z' || key == 'z') {
-                    seed_density = 70;
+                    seed_threshold = 70;
                     reseed_board(cur);
                 } else if (key == 'X' || key == 'x') {
-                    seed_density = 60;
+                    seed_threshold = 60;
                     reseed_board(cur);
                 } else if (key == 'C' || key == 'c') {
-                    seed_density = 50;
+                    seed_threshold = 50;
                     reseed_board(cur);
                 } else if (key == 'V' || key == 'v') {
-                    seed_density = 40;
+                    seed_threshold = 40;
                     reseed_board(cur);
                 } else if (key == 'B' || key == 'b') {
-                    seed_density = 30;
+                    seed_threshold = 30;
                     reseed_board(cur);
                 } else if (key == 'R' || key == 'r') {
                     reseed_board(cur);
@@ -964,9 +994,6 @@ void main(void) {
         }
         if (debug_dirty_enabled) {
             vdp_debug_dirty_update();
-        }
-        if (debug_snapshot_pending) {
-            vdp_debug_clean_snapshot_clear();
         }
 #endif
         vdp_write_dirty_patterns(cur);

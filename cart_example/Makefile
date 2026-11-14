@@ -13,6 +13,15 @@ BIN2EA5 = ../bin2ea5.py
 
 CPPFLAGS =
 CFLAGS = --target=tms9900 -O3 -fno-builtin -ffreestanding -Wno-main-return-type
+# Life3's assembly does the hot compute work. -O2 keeps the C glue much smaller
+# than -O3, with essentially the same measured speed. Command-line CFLAGS still
+# override the optimization level for every demo; LIFE3_OPT tunes the default.
+# Editing the global level here away from -O3 also takes precedence.
+LIFE3_OPT ?= -O2
+LIFE3_CFLAGS = $(CFLAGS)
+ifeq ($(origin CFLAGS),file)
+LIFE3_CFLAGS = $(if $(filter -O3,$(CFLAGS)),$(filter-out -O3,$(CFLAGS)) $(LIFE3_OPT),$(CFLAGS))
+endif
 ASFLAGS = --target=tms9900
 LDFLAGS = -T cart.ld --print-memory-usage
 EA5_LDFLAGS = -T ea5.ld --print-memory-usage
@@ -32,7 +41,7 @@ OUTPUTS = $(OBJECTS) $(foreach suffix,elf ea5.elf bin ea5.bin cart rpk img list 
 all: $(PROGRAMS:%=%.bin) $(PROGRAMS:%=%.cart) $(PROGRAMS:%=%.rpk) $(PROGRAMS:%=%.img)
 
 %.o: %.c
-	$(CC) $(CPPFLAGS) $(CFLAGS) -MMD -MP -MF $(@:.o=.d) -c $< -o $@
+	$(CC) $(CPPFLAGS) $(if $(filter life3_2x.o,$(@F)),$(LIFE3_CFLAGS),$(CFLAGS)) -MMD -MP -MF $(@:.o=.d) -c $< -o $@
 
 %.o: %.S
 	$(CC) $(CPPFLAGS) $(ASFLAGS) -MMD -MP -MF $(@:.o=.d) -c $< -o $@
@@ -88,6 +97,7 @@ clean:
 CONFIG_STAMP = .build-config.json
 CONFIG_ARGS = --value=$(call quote_config,CPPFLAGS=$(CPPFLAGS)) \
               --value=$(call quote_config,CFLAGS=$(CFLAGS)) \
+              --value=$(call quote_config,LIFE3_CFLAGS=$(LIFE3_CFLAGS)) \
               --value=$(call quote_config,ASFLAGS=$(ASFLAGS)) \
               --value=$(call quote_config,LDFLAGS=$(LDFLAGS)) \
               --value=$(call quote_config,EA5_LDFLAGS=$(EA5_LDFLAGS)) \

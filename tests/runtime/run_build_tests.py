@@ -140,7 +140,8 @@ include {helper}
             demos = work / "cart_example"
             demos.mkdir()
             (work / "tools").symlink_to(ROOT / "tools", target_is_directory=True)
-            for name in ["Makefile", "ball.c", "banner.c", "crt0.s", "cart.ld", "ea5.ld"]:
+            for name in ["Makefile", "ball.c", "banner.c", "crt0.s", "cart.ld", "ea5.ld",
+                         "life3_2x.c", "life3_splash.h", "life3_2x_step.S", "kbd.S"]:
                 shutil.copy2(ROOT / "cart_example" / name, demos / name)
             for name in ["bin2ea5.py", "bin2rpk.py"]:
                 shutil.copy2(ROOT / name, work / name)
@@ -162,6 +163,38 @@ include {helper}
                   "demo stack reservation switch reaches the linker")
             check(not (demos / "banner.bin").exists(),
                   "demo link configuration switch invalidates unrequested images")
+
+            # Check the effective optimization through actual emitted objects,
+            # including command-line precedence and partial configuration changes.
+            def life_object(opt):
+                reference = work / "reference-life.o"
+                run([tools / "clang", "--target=tms9900", f"-O{opt}", "-fno-builtin",
+                     "-ffreestanding", "-Wno-main-return-type", "-c", "life3_2x.c",
+                     "-o", reference], demos)
+                return reference.read_bytes()
+
+            run([*base, "ball.bin", "banner.bin", "life3_2x.o"], demos)
+            check((demos / "life3_2x.o").read_bytes() == life_object("2"),
+                  "Life3 defaults to O2 while other demo defaults remain O3")
+            before = snapshot(demos)
+            run([*base, "life3_2x.o"], demos)
+            check(snapshot(demos) == before, "Life3 default flags do not cause perpetual rebuilding")
+            run([*base, "life3_2x.o", "LIFE3_OPT=-O3"], demos)
+            check((demos / "life3_2x.o").read_bytes() == life_object("3"),
+                  "Life3 optimization override reaches code generation")
+            check(not (demos / "banner.bin").exists(),
+                  "Life3 flag change invalidates unrequested images")
+            run([*base, "life3_2x.o", "LIFE3_OPT=-O3", f"CFLAGS={flags}"], demos)
+            check((demos / "life3_2x.o").read_bytes() == life_object("0"),
+                  "explicit CFLAGS override Life3 default and tuning flags")
+            makefile = demos / "Makefile"
+            text = makefile.read_text()
+            default = "CFLAGS = --target=tms9900 -O3"
+            check(default in text, "demo Makefile optimization fixture matches current default")
+            makefile.write_text(text.replace(default, "CFLAGS = --target=tms9900 -O1", 1))
+            run([*base, "life3_2x.o", "LIFE3_OPT=-O3"], demos)
+            check((demos / "life3_2x.o").read_bytes() == life_object("1"),
+                  "editing the global Makefile level also overrides Life3 tuning")
     print(f"{count}/{count} build dependency tests passed")
     return 0
 
