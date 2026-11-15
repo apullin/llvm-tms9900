@@ -12,6 +12,7 @@
 static const uint8_t splash_font[SPLASH_FONT_LAST - SPLASH_FONT_FIRST + 1][7] = {
     ['-' - SPLASH_FONT_FIRST] = {0, 0, 0, 31, 0, 0, 0},
     ['.' - SPLASH_FONT_FIRST] = {0, 0, 0, 0, 0, 12, 12},
+    ['/' - SPLASH_FONT_FIRST] = {1, 2, 2, 4, 8, 8, 16},
     ['0' - SPLASH_FONT_FIRST] = {14, 17, 19, 21, 25, 17, 14},
     ['1' - SPLASH_FONT_FIRST] = {4, 12, 4, 4, 4, 4, 14},
     ['2' - SPLASH_FONT_FIRST] = {14, 17, 1, 2, 4, 8, 31},
@@ -143,14 +144,14 @@ static void __attribute__((cold, noinline, minsize)) life_show_splash(void) {
     splash_write_heading(7, 8, "LIFE");
     splash_write_text(13, 9, "V" LIFE_VERSION "  " LIFE_DATE);
     /* Key groups end at column 7; descriptions start at column 11.
-     * The five-key density group hangs left of the single-key controls. */
+     * The five-key density group hangs left of the single/paired controls. */
     splash_write_text(15, 3, "ZXCVB   DENSITY");
-    splash_write_text(16, 7, "R   RESTART");
-    splash_write_text(17, 5, "1-9   ADD RANDOM ENTROPY");
-    splash_write_text(18, 7, "D   SHOW DIRTY TILES");
-    splash_write_text(19, 7, "F   SHOW CLEAN TILES");
-    splash_write_text(20, 7, "N   ADD NOISE");
-    splash_write_text(21, 7, "M   ADD BLOB");
+    splash_write_text(16, 5, "R/K   RESTART / CLEAR");
+    splash_write_text(17, 7, "P   PRE-BAKED SCENES");
+    splash_write_text(18, 5, "G/S   GLIDER / SPACESHIP");
+    splash_write_text(19, 5, "N/M   ADD NOISE / BLOB");
+    splash_write_text(20, 5, "D/F   DIRTY / CLEAN TILES");
+    splash_write_text(21, 5, "1-9   ADD RANDOM ENTROPY");
     splash_write_text(23, 9, "SPACE TO START");
     vdp_display_on();
 

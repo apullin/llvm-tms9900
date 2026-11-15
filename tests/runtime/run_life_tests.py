@@ -116,8 +116,46 @@ def initial_seed(source):
     return cells, state
 
 
+STAMP_PATTERNS = [
+    (3, 3, [0x02, 0x01, 0x07]),                               # 0: Glider
+    (5, 4, [0x09, 0x10, 0x11, 0x1E]),                         # 1: LWSS
+    (6, 5, [0x04, 0x11, 0x20, 0x21, 0x3E]),                   # 2: MWSS
+    (7, 5, [0x0C, 0x21, 0x40, 0x41, 0x7E]),                   # 3: HWSS
+    (2, 2, [0x03, 0x03]),                                     # 4: Block
+    (4, 4, [0x0C, 0x0A, 0x02, 0x03]),                         # 5: Eater 1
+    (8, 7, [0x30, 0x44, 0x82, 0x8B, 0x82, 0x44, 0x30]),       # 6: Gosper L
+    (5, 7, [0x01, 0x05, 0x18, 0x18, 0x18, 0x05, 0x01]),       # 7: Gosper R
+    (4, 3, [0x0B, 0x0E, 0x04]),                               # 8: B-heptomino
+    (6, 6, [0x0E, 0x00, 0x21, 0x21, 0x21, 0x0E]),             # 9: Pulsar quad
+    (6, 2, [0x3F, 0x3F]),                                     # 10: Galaxy 6x2 bar
+    (5, 3, [0x04, 0x1B, 0x04]),                               # 11: Pentadecathlon half
+    (5, 7, [0x01, 0x05, 0x0A, 0x12, 0x0A, 0x05, 0x01]),       # 12: Queen Bee
+    (7, 3, [0x20, 0x08, 0x67]),                               # 13: Acorn
+]
+
+
+def stamp_reference(cells, pat_id, x0, y0, xform=0, halo=0):
+    w, h, rows = STAMP_PATTERNS[pat_id]
+    tw, th = (h, w) if (xform & 4) else (w, h)
+    result = set(cells)
+    if halo > 0:
+        for dy in range(-halo, th + halo):
+            for dx in range(-halo, tw + halo):
+                result.discard(((y0 + dy) % HEIGHT, (x0 + dx) % WIDTH))
+    for py in range(h):
+        row = rows[py]
+        for px in range(w):
+            if row & (1 << (w - 1 - px)):
+                dx = (w - 1 - px) if (xform & 1) else px
+                dy = (h - 1 - py) if (xform & 2) else py
+                if xform & 4:
+                    dx, dy = dy, dx
+                result.add(((y0 + dy) % HEIGHT, (x0 + dx) % WIDTH))
+    return result
+
+
 def interactive_addition(cells, state, kind, blob_geometry=None):
-    """Independent cell-coordinate model of the additive N/M controls."""
+    """Independent cell-coordinate model of the interactive N/M/G/S controls."""
     result = set(cells)
 
     def byte():
@@ -137,7 +175,7 @@ def interactive_addition(cells, state, kind, blob_geometry=None):
         for _ in range(WIDTH * HEIGHT // 32):
             x, y = below(WIDTH), below(HEIGHT)
             result.add((y, x))
-    else:
+    elif kind == "M":
         x0, y0 = below(WIDTH), below(HEIGHT)
         radius = 12 + below(12)
         if blob_geometry is not None:
@@ -146,6 +184,17 @@ def interactive_addition(cells, state, kind, blob_geometry=None):
             for dx in range(-radius, radius + 1):
                 if dx * dx + dy * dy <= radius * radius and byte() & 128:
                     result.add(((y0 + dy) % HEIGHT, (x0 + dx) % WIDTH))
+    elif kind == "G":
+        x0, y0 = below(WIDTH), below(HEIGHT)
+        xform = byte() & 7
+        result = stamp_reference(result, 0, x0, y0, xform, halo=6)
+    elif kind == "S":
+        x0, y0 = below(WIDTH), below(HEIGHT)
+        ship = below(3)
+        xform = byte() & 7
+        result = stamp_reference(result, 1 + ship, x0, y0, xform, halo=6)
+    else:
+        raise ValueError(f"unknown interactive control {kind!r}")
     return result, state
 
 
@@ -458,7 +507,7 @@ _start:
         base = sym.get("cart_header", entry)
         if "cart_header" in sym:
             check(int.from_bytes(rom[0x12:0x14], "big") == entry == 0x6026 and
-                  rom[0x14] == 16 and rom[0x15:0x25] == b"GAME OF LIFE 0.2",
+                  rom[0x14] == 16 and rom[0x15:0x25] == b"GAME OF LIFE 0.3",
                   "versioned menu entry/address mismatch")
         else:
             check(entry == 0xa000, "EA5 entry mismatch")
@@ -484,10 +533,10 @@ _start:
                             if mask & (1 << (columns - x - 1)):
                                 expected[(row + y) * 32 + col + x] = 0x7f
                 col += columns + 1
-        text_lines = [(13, 9, "V0.2  OCT 2026"), (15, 3, "ZXCVB   DENSITY"),
-                      (16, 7, "R   RESTART"), (17, 5, "1-9   ADD RANDOM ENTROPY"),
-                      (18, 7, "D   SHOW DIRTY TILES"), (19, 7, "F   SHOW CLEAN TILES"),
-                      (20, 7, "N   ADD NOISE"), (21, 7, "M   ADD BLOB"),
+        text_lines = [(13, 9, "V0.3  NOV 2026"), (15, 3, "ZXCVB   DENSITY"),
+                      (16, 5, "R/K   RESTART / CLEAR"), (17, 7, "P   PRE-BAKED SCENES"),
+                      (18, 5, "G/S   GLIDER / SPACESHIP"), (19, 5, "N/M   ADD NOISE / BLOB"),
+                      (20, 5, "D/F   DIRTY / CLEAN TILES"), (21, 5, "1-9   ADD RANDOM ENTROPY"),
                       (23, 9, "SPACE TO START")]
         for row, col, text in text_lines:
             expected[row * 32 + col:row * 32 + col + len(text)] = text.encode("ascii")
@@ -716,7 +765,8 @@ _start:
               "could not construct disk radius/wrapping fixtures")
         boards = [set(), {(0, 0), (95, 127), (40, 64), (41, 64), (42, 64)},
                   {(y, x) for y in range(HEIGHT) for x in range(WIDTH)}]
-        for key, function in [("N", "add_noise"), ("M", "add_blob")]:
+        for key, function in [("N", "add_noise"), ("M", "add_blob"),
+                              ("G", "add_glider"), ("S", "add_spaceship")]:
             _, code = self.probe(directory, f'''.text
 .globl _start
 _start:
@@ -729,7 +779,9 @@ _start:
  BL @{sym[function]}
  IDLE
 ''')
-            for seed in seeds if key == "N" else sorted(blob_seeds):
+            test_seeds = sorted(blob_seeds) if key == "M" else (
+                [1, 2, 3, 5, 9, 14, 0x1d2b, 0xabcd, 0xffff] if key in ("G", "S") else seeds)
+            for seed in test_seeds:
                 for cells in boards:
                     expected, final_rng = interactive_addition(cells, seed, key)
                     image = self.cart_memory(sym, rom)
@@ -778,7 +830,31 @@ _start:
             check(memory[address:address + BOARD_BYTES] == pack(expected), f"{key} real main board mismatch")
             address = sym["rng_state"]
             check(int.from_bytes(memory[address:address + 2], "big") == state, f"{key} main RNG mismatch")
-        print(f"N/M -O{opt}: exact additions, radii 12-23, all wrapped edges, guards, dirty/activity, ABI and held/released keys PASS", flush=True)
+
+        # Verify P cycles through all 6 pre-baked scenes (and wraps 5 -> 0) and K wipes clean.
+        image = self.program_memory(sym, rom)
+        keys = [32]
+        for _ in range(7):
+            keys += [ord("P"), 0]
+        keys += [ord("K"), None]
+        self.keyboard_stub(directory, image, sym, tuple(keys))
+        records, memory = self.simulate(directory, image, sym["_start"], [(0xa000, 0x5800)],
+                                       [sym["next_scene"], sym["wipe_board"]])
+        check(records[-1]["halt"] == "idle", "P/K key dispatch did not complete")
+        next_hits = sum(int(e["pc"], 16) == sym["next_scene"] for e in records[:-1])
+        check(next_hits == 7 and memory[sym["scene_index"]] == 1, "P scene cycling wrap mismatch")
+        # After K + its VDP draw + one empty step before the None scan, BOTH boards,
+        # active_rows, and dirty_tiles must have settled to all-zero!
+        wipe_hits = sum(int(e["pc"], 16) == sym["wipe_board"] for e in records[:-1])
+        check(wipe_hits == 8, "K did not invoke wipe_board")
+        check(memory[sym["board_a"]:sym["board_a"] + BOARD_BYTES] == bytes(BOARD_BYTES) and
+              memory[sym["board_b"]:sym["board_b"] + BOARD_BYTES] == bytes(BOARD_BYTES),
+              "K did not wipe boards")
+        check(memory[sym["active_rows"]:sym["active_rows"] + TILE_ROWS] == bytes(TILE_ROWS),
+              "K did not clear active_rows")
+        check(memory[sym["dirty_tiles"]:sym["dirty_tiles"] + TILE_ROWS * TILE_COLS] == bytes(TILE_ROWS * TILE_COLS),
+              "K board did not settle clean after VDP erase")
+        print(f"N/M/G/S/P/K -O{opt}: exact additions/halos, scenes, radii 12-23, wrapped edges, guards, dirty/activity and keys PASS", flush=True)
 
     def startup_tests(self, opt, life3=None):
         for name in ["life2x", "life2_2x", "life3_2x"]:

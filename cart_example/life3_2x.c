@@ -10,8 +10,8 @@
 #include <stdint.h>
 
 #define LIFE_TITLE "GAME OF LIFE"
-#define LIFE_VERSION "0.2"
-#define LIFE_DATE "OCT 2026"
+#define LIFE_VERSION "0.3"
+#define LIFE_DATE "NOV 2026"
 #define LIFE_MENU_TITLE LIFE_TITLE " " LIFE_VERSION
 
 /* ===== CARTRIDGE HEADER ===== */
@@ -50,6 +50,7 @@ const struct life_cart_header cart_header = {
 
 #define VDP_CMD_PORT   0x8C02
 #define VDP_DATA_PORT  0x8C00
+#define PSG_PORT       0x8400
 
 extern uint16_t kbd_scan(void);
 
@@ -101,47 +102,58 @@ _Static_assert(CELL_W == 128 && CELL_H == 96 && SCALE == 2 &&
 #define LIFE_NOISE_PICKS ((CELL_W * CELL_H) / 32)
 #define LIFE_BLOB_MIN_RADIUS 12
 #define LIFE_BLOB_RADIUS_RANGE 12 /* Radius 12-23: diameter 25-47 cells. */
+#define LIFE_GLIDER_HALO 6        /* Dead margin cleared around G/S spawns. */
+#define LIFE_SCENE_COUNT 6
 
 #define LIFE_TILES_W (CELL_W / 4)
 #define LIFE_TILES_H (CELL_H / 4)
 
 #define LIFE_DEBUG_DIRTY 1
 
-/* ===== VDP ACCESS ===== */
+/* ===== VDP & PSG ACCESS ===== */
 #define VDP_OUT(port, val) do { \
     uint16_t out = (uint16_t)(val) << 8; \
     asm volatile("MOVB %0, @%1" : : "r"(out), "i"(port) : "memory", "cc"); \
 } while (0)
 
+static void __attribute__((cold, noinline, minsize)) psg_mute(void) {
+    /* LIMI 0 stops the console ISR, so mute any leftover menu beep tone. */
+    VDP_OUT(PSG_PORT, 0x9Fu);
+    VDP_OUT(PSG_PORT, 0xBFu);
+    VDP_OUT(PSG_PORT, 0xDFu);
+    VDP_OUT(PSG_PORT, 0xFFu);
+}
+
 static void vdp_cmd(uint8_t val)  { VDP_OUT(VDP_CMD_PORT, val); }
 static void vdp_data(uint8_t val) { VDP_OUT(VDP_DATA_PORT, val); }
 
-static void vdp_set_register(uint8_t reg, uint8_t val) {
+static void __attribute__((noinline, minsize))
+vdp_set_register(uint8_t reg, uint8_t val) {
     vdp_cmd(val);
     vdp_cmd(reg | 0x80);
 }
 
-static void vdp_set_write_addr(uint16_t addr) {
+static void __attribute__((noinline, minsize))
+vdp_set_write_addr(uint16_t addr) {
     vdp_cmd(addr & 0xFF);
     vdp_cmd(((addr >> 8) & 0x3F) | 0x40);
 }
 
-static void vdp_init_gfx2(void) {
-    vdp_set_register(1, 0x80); /* Display off, 16K VRAM */
-    vdp_set_register(0, 0x02); /* Bitmap graphics mode */
-    vdp_set_register(2, 0x06); /* Name table @ 0x1800 */
-    vdp_set_register(3, 0xFF); /* Color table @ 0x2000 (bitmap mask) */
-    vdp_set_register(4, 0x03); /* Pattern table @ 0x0000 (bitmap mask) */
-    vdp_set_register(5, 0x36); /* Sprite attribute @ 0x1B00 */
-    vdp_set_register(6, 0x07); /* Sprite pattern @ 0x3800 */
-    vdp_set_register(7, 0x01); /* Backdrop black */
+static void __attribute__((cold, noinline, minsize)) vdp_init_gfx2(void) {
+    static const uint8_t regs[8] = {0x02, 0x80, 0x06, 0xFF, 0x03, 0x36, 0x07, 0x01};
+    /* Preserve exact register write order expected by splash_tests: 1,0,2,3,4,5,6,7 */
+    vdp_set_register(1, regs[1]);
+    vdp_set_register(0, regs[0]);
+    for (uint8_t r = 2; r < 8; ++r) {
+        vdp_set_register(r, regs[r]);
+    }
 }
 
 static void vdp_display_on(void) {
     vdp_set_register(1, 0xE0);
 }
 
-static void vdp_init_name_table(void) {
+static void __attribute__((cold, noinline, minsize)) vdp_init_name_table(void) {
     uint16_t i;
 
     vdp_set_write_addr(NAME_TABLE_ADDR);
@@ -150,7 +162,7 @@ static void vdp_init_name_table(void) {
     }
 }
 
-static void vdp_init_color_table(void) {
+static void __attribute__((cold, noinline, minsize)) vdp_init_color_table(void) {
     uint16_t i;
     uint8_t color = (uint8_t)((COLOR_FG << 4) | (COLOR_BG & 0x0F));
 
@@ -160,7 +172,8 @@ static void vdp_init_color_table(void) {
     }
 }
 
-static void vdp_set_tile_color(uint16_t tile_row, uint16_t tile_col, uint8_t color) {
+static void __attribute__((noinline, minsize))
+vdp_set_tile_color(uint16_t tile_row, uint16_t tile_col, uint8_t color) {
     uint16_t group = (uint16_t)(tile_row >> 3);
     uint16_t pattern = (uint16_t)(((tile_row & 7u) << 5) | tile_col);
     uint16_t addr = (uint16_t)(COLOR_TABLE_ADDR + group * 0x0800 + (pattern << 3));
@@ -210,7 +223,7 @@ static void vdp_apply_border_colors(void) {
     }
 }
 
-static void vdp_clear_pattern_table(void) {
+static void __attribute__((cold, noinline, minsize)) vdp_clear_pattern_table(void) {
     uint16_t i;
 
     vdp_set_write_addr(PATTERN_TABLE_ADDR);
@@ -230,7 +243,7 @@ static void vdp_disable_sprites(void) {
 /* ===== RNG ===== */
 static uint16_t rng_state = 0x1D2Bu;
 
-static uint16_t rng_next(void) {
+static uint16_t __attribute__((noinline, minsize)) rng_next(void) {
     uint16_t lsb = (uint16_t)(rng_state & 1u);
     rng_state >>= 1;
     if (lsb) {
@@ -241,7 +254,7 @@ static uint16_t rng_next(void) {
 
 /* Rejection sampling works for non-power-of-two dimensions such as 96 rows.
  * Callers supply a nonzero bound no greater than 256. */
-static uint16_t rng_below(uint16_t bound) {
+static uint16_t __attribute__((noinline, minsize)) rng_below(uint16_t bound) {
     uint16_t mask = 1;
     uint16_t value;
     while (mask < bound) {
@@ -256,7 +269,7 @@ static uint16_t rng_below(uint16_t bound) {
 
 /* Consecutive LFSR states share seven low-byte bits. Advance a full byte for
  * interactive noise so nearby picks/dropouts do not inherit that overlap. */
-static uint8_t __attribute__((noinline)) rng_byte(void) {
+static uint8_t __attribute__((noinline, minsize)) rng_byte(void) {
     uint16_t i;
     for (i = 0; i < 8; ++i) {
         rng_next();
@@ -264,7 +277,7 @@ static uint8_t __attribute__((noinline)) rng_byte(void) {
     return (uint8_t)rng_state;
 }
 
-static uint16_t random_below(uint16_t bound) {
+static uint16_t __attribute__((noinline, minsize)) random_below(uint16_t bound) {
     uint16_t mask = 1;
     uint16_t value;
     while (mask < bound) {
@@ -294,10 +307,10 @@ static uint8_t debug_dirty_enabled;
 static uint8_t debug_snapshot_pending; /* clear purple after one frame */
 static uint8_t debug_key_prev;
 static uint16_t entropy;
+static uint16_t frame_ticks;
+static uint8_t scene_index;
 static uint8_t seed_threshold = LIFE_SEED_THRESHOLD;
 static volatile uint8_t * const kbd_device = (volatile uint8_t *)0x8374;
-static volatile uint8_t * const vdp_counter = (volatile uint8_t *)0x8379;
-static uint8_t frame_prev;
 #endif
 
 static const uint8_t bit_mask[8] = {
@@ -341,22 +354,17 @@ const uint16_t expand8[256] = {
     0xffc0, 0xffc3, 0xffcc, 0xffcf, 0xfff0, 0xfff3, 0xfffc, 0xffff,
 };
 
-static const uint8_t expand4[16] = {
-    0x00, 0x03, 0x0C, 0x0F,
-    0x30, 0x33, 0x3C, 0x3F,
-    0xC0, 0xC3, 0xCC, 0xCF,
-    0xF0, 0xF3, 0xFC, 0xFF
-};
-
 /* Any live cell can affect its own tile row or a neighboring row next time.
  * Horizontal dilation is implicit: an active row computes all 128 cells. */
-static void activate_row_and_neighbors(uint16_t ty) {
+static void __attribute__((noinline, minsize))
+activate_row_and_neighbors(uint16_t ty) {
     active_rows[ty ? ty - 1 : LIFE_TILES_H - 1] = 1;
     active_rows[ty] = 1;
     active_rows[ty + 1 == LIFE_TILES_H ? 0 : ty + 1] = 1;
 }
 
-static void build_active_rows(uint8_t (*src)[CELL_ROW_BYTES]) {
+static void __attribute__((noinline, minsize))
+build_active_rows(uint8_t (*src)[CELL_ROW_BYTES]) {
     uint16_t ty;
     for (ty = 0; ty < LIFE_TILES_H; ++ty) {
         active_rows[ty] = 0;
@@ -377,7 +385,8 @@ static void build_active_rows(uint8_t (*src)[CELL_ROW_BYTES]) {
     }
 }
 
-static void clear_board(uint8_t (*b)[CELL_ROW_BYTES]) {
+static void __attribute__((noinline, minsize))
+clear_board(uint8_t (*b)[CELL_ROW_BYTES]) {
     uint16_t y;
     uint16_t x;
     for (y = 0; y < CELL_H; y++) {
@@ -392,7 +401,8 @@ static void set_cell(uint8_t (*b)[CELL_ROW_BYTES], uint16_t x, uint16_t y) {
 }
 
 /* Share the cold bounds/dropout code across all block origins to conserve ROM. */
-static void __attribute__((noinline)) seed_block(uint8_t (*b)[CELL_ROW_BYTES], uint16_t x0, uint16_t y0,
+static void __attribute__((noinline, minsize))
+seed_block(uint8_t (*b)[CELL_ROW_BYTES], uint16_t x0, uint16_t y0,
                        uint8_t dropout_threshold) {
     uint16_t x;
     uint16_t y;
@@ -419,7 +429,8 @@ static void __attribute__((noinline)) seed_block(uint8_t (*b)[CELL_ROW_BYTES], u
 extern void life_compute_row(uint16_t *row_prev, uint16_t *row,
                               uint16_t *row_next, uint16_t *row_dst);
 
-static void seed_board(uint8_t (*b)[CELL_ROW_BYTES], uint8_t threshold) {
+static void __attribute__((noinline, minsize))
+seed_board(uint8_t (*b)[CELL_ROW_BYTES], uint8_t threshold) {
     uint16_t x;
     uint16_t y;
     uint16_t x_offset = (uint16_t)(rng_next() & (LIFE_SEED_BLOCK_SIZE - 1));
@@ -464,31 +475,6 @@ extern void step_board(uint8_t (*src)[CELL_ROW_BYTES],
                        uint8_t (*dst)[CELL_ROW_BYTES]);
 extern void vdp_write_dirty_patterns(uint8_t (*b)[CELL_ROW_BYTES]);
 
-static void vdp_write_tile_scaled(uint16_t ty, uint16_t tx,
-                                  uint16_t tile_row_start,
-                                  uint16_t tile_col_start,
-                                  uint8_t (*b)[CELL_ROW_BYTES]) {
-    uint16_t tile_row = (uint16_t)(tile_row_start + ty);
-    uint16_t tile_col = (uint16_t)(tile_col_start + tx);
-    uint16_t group = (uint16_t)(tile_row >> 3);
-    uint16_t pattern_base = (uint16_t)((tile_row & 7u) << 5);
-    uint16_t pattern = (uint16_t)(pattern_base | tile_col);
-    uint16_t addr = (uint16_t)(PATTERN_TABLE_ADDR + (group * 0x0800) + (pattern << 3));
-    uint16_t cell_y = (uint16_t)(ty << 2);
-    uint16_t cell_x = (uint16_t)(tx << 2);
-    uint16_t byte_index = (uint16_t)(cell_x >> 3);
-    uint16_t row;
-
-    vdp_set_write_addr(addr);
-    for (row = 0; row < 4; row++) {
-        uint8_t v = b[cell_y + row][byte_index];
-        uint8_t nibble = (cell_x & 4u) ? (uint8_t)(v & 0x0F) : (uint8_t)(v >> 4);
-        uint8_t expanded = expand4[nibble];
-        vdp_data(expanded);
-        vdp_data(expanded);
-    }
-}
-
 static void vdp_write_border_tile(uint16_t tile_row, uint16_t tile_col,
                                   uint8_t row_start, uint8_t row_end,
                                   uint8_t col_mask,
@@ -513,7 +499,8 @@ static void vdp_write_border_tile(uint16_t tile_row, uint16_t tile_col,
     }
 }
 
-static void mark_all_dirty(void) {
+static void __attribute__((noinline, minsize))
+mark_all_dirty(void) {
     uint16_t ty;
     uint16_t tx;
 
@@ -590,8 +577,9 @@ static void vdp_write_border_tiles(void) {
 #if LIFE_DEBUG_DIRTY
 /* Add cells to the current generation without clearing the existing pattern.
  * Update drawing and next-generation activity only where a dead cell changes. */
-static void __attribute__((noinline)) add_live_cell(uint8_t (*b)[CELL_ROW_BYTES],
-                                                  uint16_t x, uint16_t y) {
+static void __attribute__((noinline, minsize))
+add_live_cell(uint8_t (*b)[CELL_ROW_BYTES],
+              uint16_t x, uint16_t y) {
     uint8_t mask = bit_mask[x & 7];
     if (!(b[y][x >> 3] & mask)) {
         b[y][x >> 3] |= mask;
@@ -600,7 +588,8 @@ static void __attribute__((noinline)) add_live_cell(uint8_t (*b)[CELL_ROW_BYTES]
     }
 }
 
-static void __attribute__((noinline)) add_noise(uint8_t (*b)[CELL_ROW_BYTES]) {
+static void __attribute__((noinline, minsize))
+add_noise(uint8_t (*b)[CELL_ROW_BYTES]) {
     uint16_t i;
     for (i = 0; i < LIFE_NOISE_PICKS; ++i) {
         uint16_t x = random_below(CELL_W);
@@ -612,7 +601,8 @@ static void __attribute__((noinline)) add_noise(uint8_t (*b)[CELL_ROW_BYTES]) {
 /* A large, half-filled disk disturbs a substantial area without imposing the
  * startup block lattice. Squared distances stay below 1059, so 16-bit integer
  * arithmetic suffices; no floating point or square root is needed. */
-static void __attribute__((noinline)) add_blob(uint8_t (*b)[CELL_ROW_BYTES]) {
+static void __attribute__((noinline, minsize))
+add_blob(uint8_t (*b)[CELL_ROW_BYTES]) {
     uint16_t x0 = random_below(CELL_W);
     uint16_t y0 = random_below(CELL_H);
     int16_t radius = (int16_t)(LIFE_BLOB_MIN_RADIUS + random_below(LIFE_BLOB_RADIUS_RANGE));
@@ -639,7 +629,204 @@ static void __attribute__((noinline)) add_blob(uint8_t (*b)[CELL_ROW_BYTES]) {
     }
 }
 
-static void vdp_debug_dirty_update(void) {
+static void __attribute__((noinline, minsize))
+clear_live_cell(uint8_t (*b)[CELL_ROW_BYTES], uint16_t x, uint16_t y) {
+    uint8_t mask = bit_mask[x & 7];
+    if (b[y][x >> 3] & mask) {
+        b[y][x >> 3] &= (uint8_t)~mask;
+        dirty_tiles[y >> 2][x >> 2] = 1;
+    }
+}
+
+enum life_pattern_id {
+    PAT_GLIDER = 0,
+    PAT_LWSS,
+    PAT_MWSS,
+    PAT_HWSS,
+    PAT_BLOCK,
+    PAT_EATER1,
+    PAT_GUN_L,
+    PAT_GUN_R,
+    PAT_BHEPT,
+    PAT_PULSAR_Q,
+    PAT_GALAXY_BAR,
+    PAT_PENTA_H,
+    PAT_QBEE,
+    PAT_ACORN,
+};
+
+/* Flat reloc-free 8-bit pattern dictionary: {w, h, row0..row_{h-1}}. */
+static const uint8_t pat_blob[] = {
+    3, 3, 0x02, 0x01, 0x07,                                     /* 0: Glider */
+    5, 4, 0x09, 0x10, 0x11, 0x1E,                               /* 1: LWSS */
+    6, 5, 0x04, 0x11, 0x20, 0x21, 0x3E,                         /* 2: MWSS */
+    7, 5, 0x0C, 0x21, 0x40, 0x41, 0x7E,                         /* 3: HWSS */
+    2, 2, 0x03, 0x03,                                           /* 4: Block */
+    4, 4, 0x0C, 0x0A, 0x02, 0x03,                               /* 5: Eater 1 */
+    8, 7, 0x30, 0x44, 0x82, 0x8B, 0x82, 0x44, 0x30,             /* 6: Gosper L */
+    5, 7, 0x01, 0x05, 0x18, 0x18, 0x18, 0x05, 0x01,             /* 7: Gosper R */
+    4, 3, 0x0B, 0x0E, 0x04,                                     /* 8: B-heptomino */
+    6, 6, 0x0E, 0x00, 0x21, 0x21, 0x21, 0x0E,                   /* 9: Pulsar quad */
+    6, 2, 0x3F, 0x3F,                                           /* 10: Galaxy 6x2 bar */
+    5, 3, 0x04, 0x1B, 0x04,                                     /* 11: Pentadecathlon half */
+    5, 7, 0x01, 0x05, 0x0A, 0x12, 0x0A, 0x05, 0x01,             /* 12: Queen Bee */
+    7, 3, 0x20, 0x08, 0x67,                                     /* 13: Acorn */
+};
+
+static uint16_t __attribute__((noinline, minsize))
+wrap_y(int16_t y) {
+    if (y < 0) y += CELL_H;
+    if (y >= CELL_H) y -= CELL_H;
+    return (uint16_t)y;
+}
+
+/* Stamp a pattern under any D4 orientation (xform bits: 0=flip_x, 1=flip_y,
+ * 2=transpose). If halo > 0, clears a toroidal margin around the bounding box
+ * first so newly spawned gliders/spaceships survive even on dense boards. */
+static void __attribute__((noinline, minsize))
+stamp_pattern(uint8_t (*b)[CELL_ROW_BYTES], uint8_t pat_id,
+              uint16_t x0, uint16_t y0, uint8_t xform, int16_t halo) {
+    const uint8_t *p = pat_blob;
+    while (pat_id--) {
+        p += 2u + p[1];
+    }
+    int16_t w = (int16_t)p[0];
+    int16_t h = (int16_t)p[1];
+    const uint8_t *rows = p + 2;
+    int16_t tw = (xform & 4u) ? h : w;
+    int16_t th = (xform & 4u) ? w : h;
+    int16_t py;
+    int16_t px;
+
+    if (halo > 0) {
+        int16_t dy;
+        int16_t dx;
+        for (dy = (int16_t)-halo; dy < (int16_t)(th + halo); ++dy) {
+            uint16_t cy = wrap_y((int16_t)y0 + dy);
+            for (dx = (int16_t)-halo; dx < (int16_t)(tw + halo); ++dx) {
+                clear_live_cell(b, (uint16_t)((x0 + (uint16_t)dx) & (CELL_W - 1u)), cy);
+            }
+        }
+    }
+
+    for (py = 0; py < h; ++py) {
+        uint8_t row = rows[py];
+        for (px = 0; px < w; ++px) {
+            if (row & (uint8_t)(1u << (w - 1 - px))) {
+                int16_t dx = (xform & 1u) ? (int16_t)(w - 1 - px) : px;
+                int16_t dy = (xform & 2u) ? (int16_t)(h - 1 - py) : py;
+                if (xform & 4u) {
+                    int16_t tmp = dx;
+                    dx = dy;
+                    dy = tmp;
+                }
+                add_live_cell(b, (uint16_t)((x0 + (uint16_t)dx) & (CELL_W - 1u)),
+                              wrap_y((int16_t)y0 + dy));
+            }
+        }
+    }
+    if (halo > 0) {
+        build_active_rows(b);
+    }
+}
+
+static void __attribute__((noinline, minsize))
+add_glider(uint8_t (*b)[CELL_ROW_BYTES]) {
+    uint16_t x0 = random_below(CELL_W);
+    uint16_t y0 = random_below(CELL_H);
+    uint8_t xform = (uint8_t)(rng_byte() & 7u);
+    stamp_pattern(b, PAT_GLIDER, x0, y0, xform, LIFE_GLIDER_HALO);
+}
+
+static void __attribute__((noinline, minsize))
+add_spaceship(uint8_t (*b)[CELL_ROW_BYTES]) {
+    uint16_t x0 = random_below(CELL_W);
+    uint16_t y0 = random_below(CELL_H);
+    uint8_t kind = (uint8_t)random_below(3); /* 0=LWSS, 1=MWSS, 2=HWSS */
+    uint8_t xform = (uint8_t)(rng_byte() & 7u);
+    stamp_pattern(b, (uint8_t)(PAT_LWSS + kind), x0, y0, xform, LIFE_GLIDER_HALO);
+}
+
+static const uint8_t scene_stream[] = {
+    /* Scene 0: Gosper Gun (10,10) + Distant Eater 1 (72,58) */
+    PAT_BLOCK, 10, 14, 0,  PAT_GUN_L, 20, 12, 0,
+    PAT_GUN_R, 30, 10, 0,  PAT_BLOCK, 44, 12, 0,
+    PAT_EATER1, 72, 58, 0,
+    0xFFu,
+
+    /* Scene 1: Twin Crossfire Gosper Guns — (12,16) SE vs (73,14) SW */
+    PAT_BLOCK, 12, 20, 0,  PAT_GUN_L, 22, 18, 0,
+    PAT_GUN_R, 32, 16, 0,  PAT_BLOCK, 46, 18, 0,
+    PAT_BLOCK, 107, 18, 1, PAT_GUN_L, 91, 16, 1,
+    PAT_GUN_R, 84, 14, 1,  PAT_BLOCK, 73, 16, 1,
+    0xFFu,
+
+    /* Scene 2: Conway's B-Heptomino Puffer 1 */
+    PAT_HWSS, 16, 40, 0,   PAT_HWSS, 16, 51, 2,   PAT_BHEPT, 13, 45, 5,
+    0xFFu,
+
+    /* Scene 3: Toroidal Spaceship Armada */
+    PAT_HWSS, 10, 10, 0,   PAT_MWSS, 54, 10, 0,   PAT_LWSS,  96, 10, 0,
+    PAT_HWSS, 28, 28, 1,   PAT_MWSS, 72, 28, 1,   PAT_LWSS, 112, 28, 1,
+    PAT_HWSS, 18, 46, 0,   PAT_HWSS, 62, 46, 0,   PAT_MWSS, 104, 46, 0,
+    PAT_HWSS, 36, 64, 1,   PAT_MWSS, 80, 64, 1,   PAT_LWSS, 116, 64, 1,
+    PAT_MWSS, 14, 82, 0,   PAT_LWSS, 58, 82, 0,   PAT_HWSS, 100, 82, 0,
+    0xFFu,
+
+    /* Scene 4: Clockwork Oscillator Garden */
+    PAT_PULSAR_Q,   16, 14, 0,  PAT_PULSAR_Q,   23, 14, 1,
+    PAT_PULSAR_Q,   16, 21, 2,  PAT_PULSAR_Q,   23, 21, 3,
+    PAT_PULSAR_Q,   99, 69, 0,  PAT_PULSAR_Q,  106, 69, 1,
+    PAT_PULSAR_Q,   99, 76, 2,  PAT_PULSAR_Q,  106, 76, 3,
+    PAT_GALAXY_BAR, 104, 16, 0, PAT_GALAXY_BAR, 101, 16, 4,
+    PAT_GALAXY_BAR, 101, 23, 0, PAT_GALAXY_BAR, 108, 19, 4,
+    PAT_GALAXY_BAR,  21, 71, 0, PAT_GALAXY_BAR,  18, 71, 4,
+    PAT_GALAXY_BAR,  18, 78, 0, PAT_GALAXY_BAR,  25, 74, 4,
+    PAT_PENTA_H,    59, 17, 0,  PAT_PENTA_H,    64, 17, 1,
+    PAT_PENTA_H,    59, 76, 0,  PAT_PENTA_H,    64, 76, 1,
+    PAT_BLOCK,      53, 47, 0,  PAT_QBEE,       58, 44, 0,  PAT_BLOCK, 73, 47, 0,
+    0xFFu,
+
+    /* Scene 5: Acorn Methuselah */
+    PAT_ACORN, 60, 46, 0,
+    0xFFu,
+};
+
+static void __attribute__((noinline, minsize))
+wipe_board(uint8_t (*b)[CELL_ROW_BYTES]) {
+    uint16_t ty;
+    clear_board(b);
+    for (ty = 0; ty < LIFE_TILES_H; ++ty) {
+        active_rows[ty] = 0;
+    }
+    mark_all_dirty();
+}
+
+static void __attribute__((noinline, minsize))
+load_scene(uint8_t (*b)[CELL_ROW_BYTES], uint8_t target_scene) {
+    const uint8_t *p = scene_stream;
+    uint8_t cur_scene = 0;
+
+    wipe_board(b);
+    while (cur_scene < target_scene) {
+        if (*p++ == 0xFFu) {
+            ++cur_scene;
+        }
+    }
+    while (*p != 0xFFu) {
+        stamp_pattern(b, p[0], p[1], p[2], p[3], 0);
+        p += 4;
+    }
+}
+
+static void __attribute__((noinline, minsize))
+next_scene(uint8_t (*b)[CELL_ROW_BYTES]) {
+    load_scene(b, scene_index);
+    scene_index = (uint8_t)((scene_index + 1u == LIFE_SCENE_COUNT) ? 0u : (scene_index + 1u));
+}
+
+static void __attribute__((noinline, minsize))
+vdp_debug_dirty_update(void) {
     uint16_t tile_row_start = (uint16_t)(LIFE_REGION_Y0 >> 3);
     uint16_t tile_col_start = (uint16_t)(LIFE_REGION_X0 >> 3);
     uint16_t ty;
@@ -665,7 +852,8 @@ static void vdp_debug_dirty_update(void) {
     }
 }
 
-static void vdp_debug_dirty_clear(void) {
+static void __attribute__((noinline, minsize))
+vdp_debug_dirty_clear(void) {
     uint16_t tile_row_start = (uint16_t)(LIFE_REGION_Y0 >> 3);
     uint16_t tile_col_start = (uint16_t)(LIFE_REGION_X0 >> 3);
     uint16_t ty;
@@ -684,7 +872,8 @@ static void vdp_debug_dirty_clear(void) {
     }
 }
 
-static void vdp_debug_clean_snapshot(void) {
+static void __attribute__((noinline, minsize))
+vdp_debug_clean_snapshot(void) {
     uint16_t tile_row_start = (uint16_t)(LIFE_REGION_Y0 >> 3);
     uint16_t tile_col_start = (uint16_t)(LIFE_REGION_X0 >> 3);
     uint16_t ty;
@@ -704,7 +893,8 @@ static void vdp_debug_clean_snapshot(void) {
     debug_snapshot_pending = 1;
 }
 
-static void vdp_debug_clean_snapshot_clear(void) {
+static void __attribute__((noinline, minsize))
+vdp_debug_clean_snapshot_clear(void) {
     uint16_t tile_row_start = (uint16_t)(LIFE_REGION_Y0 >> 3);
     uint16_t tile_col_start = (uint16_t)(LIFE_REGION_X0 >> 3);
     uint16_t ty;
@@ -722,7 +912,8 @@ static void vdp_debug_clean_snapshot_clear(void) {
     debug_snapshot_pending = 0;
 }
 
-static void reseed_board(uint8_t (*b)[CELL_ROW_BYTES]) {
+static void __attribute__((noinline, minsize))
+reseed_board(uint8_t (*b)[CELL_ROW_BYTES]) {
     if (entropy != 0) {
         rng_state ^= entropy;
         if (rng_state == 0) {
@@ -733,9 +924,54 @@ static void reseed_board(uint8_t (*b)[CELL_ROW_BYTES]) {
     build_active_rows(b);
     mark_all_dirty();
 }
+
+static const uint8_t density_keys[5] = {'Z', 'X', 'C', 'V', 'B'};
+
+static void __attribute__((cold, noinline, minsize))
+handle_key(uint8_t key, uint8_t (*b)[CELL_ROW_BYTES]) {
+    uint16_t i;
+    if (key >= 'a' && key <= 'z') {
+        key = (uint8_t)(key - ('a' - 'A'));
+    }
+    if (key == 'D') {
+        debug_dirty_enabled = (uint8_t)!debug_dirty_enabled;
+        if (!debug_dirty_enabled) {
+            vdp_debug_dirty_clear();
+        }
+    } else if (key == 'F') {
+        vdp_debug_clean_snapshot();
+    } else if (key == 'N') {
+        add_noise(b);
+    } else if (key == 'M') {
+        add_blob(b);
+    } else if (key == 'G') {
+        add_glider(b);
+    } else if (key == 'S') {
+        add_spaceship(b);
+    } else if (key == 'P') {
+        next_scene(b);
+    } else if (key == 'K') {
+        wipe_board(b);
+    } else if (key == 'R') {
+        reseed_board(b);
+    } else if (key >= '1' && key <= '9') {
+        uint16_t add = (uint16_t)(key - '0');
+        entropy = (uint16_t)(entropy + (add * 0x1111u));
+        entropy ^= (uint16_t)((entropy << 5) | (entropy >> 11));
+    } else {
+        for (i = 0; i < 5; ++i) {
+            if (key == density_keys[i]) {
+                seed_threshold = (uint8_t)(70u - i * 10u);
+                reseed_board(b);
+                break;
+            }
+        }
+    }
+}
 #endif
 
 void main(void) {
+    psg_mute();
     life_show_splash();
     vdp_init_gfx2();
     vdp_clear_pattern_table();
@@ -767,52 +1003,15 @@ void main(void) {
         next = tmp;
         step_board(next, cur);
 #if LIFE_DEBUG_DIRTY
-        {
-            uint8_t frame = *vdp_counter;
-            if (frame != frame_prev) {
-                entropy ^= (uint16_t)((uint16_t)frame << 8) | frame_prev;
-                frame_prev = frame;
-            }
-        }
+        /* Under LIMI 0, console 0x8379 never ticks; mix generation count instead. */
+        entropy = (uint16_t)(((entropy << 5) | (entropy >> 11)) ^ (++frame_ticks));
         *kbd_device = 0;
         {
             uint8_t key = (uint8_t)kbd_scan();
             uint8_t key_pressed = (uint8_t)(key != 0 && key != debug_key_prev);
             debug_key_prev = key;
             if (key_pressed) {
-                if (key == 'D' || key == 'd') {
-                    debug_dirty_enabled = (uint8_t)!debug_dirty_enabled;
-                    if (!debug_dirty_enabled) {
-                        vdp_debug_dirty_clear();
-                    }
-                } else if (key == 'F' || key == 'f') {
-                    vdp_debug_clean_snapshot();
-                } else if (key == 'N' || key == 'n') {
-                    add_noise(cur);
-                } else if (key == 'M' || key == 'm') {
-                    add_blob(cur);
-                } else if (key >= '1' && key <= '9') {
-                    uint16_t add = (uint16_t)(key - '0');
-                    entropy = (uint16_t)(entropy + (add * 0x1111u));
-                    entropy ^= (uint16_t)((entropy << 5) | (entropy >> 11));
-                } else if (key == 'Z' || key == 'z') {
-                    seed_threshold = 70;
-                    reseed_board(cur);
-                } else if (key == 'X' || key == 'x') {
-                    seed_threshold = 60;
-                    reseed_board(cur);
-                } else if (key == 'C' || key == 'c') {
-                    seed_threshold = 50;
-                    reseed_board(cur);
-                } else if (key == 'V' || key == 'v') {
-                    seed_threshold = 40;
-                    reseed_board(cur);
-                } else if (key == 'B' || key == 'b') {
-                    seed_threshold = 30;
-                    reseed_board(cur);
-                } else if (key == 'R' || key == 'r') {
-                    reseed_board(cur);
-                }
+                handle_key(key, cur);
             }
         }
         if (debug_dirty_enabled) {
