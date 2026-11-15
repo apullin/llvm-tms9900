@@ -150,6 +150,8 @@ static void __attribute__((cold, noinline, minsize)) vdp_init_gfx2(void) {
 }
 
 static void vdp_display_on(void) {
+    /* TI console ROM KSCAN (0x000E) writes @0x83D4 to VDP R1 on keypress! */
+    *(volatile uint8_t *)0x83D4 = 0xE0u;
     vdp_set_register(1, 0xE0);
 }
 
@@ -309,7 +311,7 @@ static uint8_t debug_key_prev;
 static uint16_t entropy;
 static uint16_t frame_ticks;
 static uint8_t scene_index;
-static uint8_t seed_threshold = LIFE_SEED_THRESHOLD;
+static uint16_t seed_threshold = LIFE_SEED_THRESHOLD;
 static volatile uint8_t * const kbd_device = (volatile uint8_t *)0x8374;
 #endif
 
@@ -920,7 +922,7 @@ reseed_board(uint8_t (*b)[CELL_ROW_BYTES]) {
             rng_state = 0x1D2Bu;
         }
     }
-    seed_board(b, seed_threshold);
+    seed_board(b, (uint8_t)seed_threshold);
     build_active_rows(b);
     mark_all_dirty();
 }
@@ -961,7 +963,7 @@ handle_key(uint8_t key, uint8_t (*b)[CELL_ROW_BYTES]) {
     } else {
         for (i = 0; i < 5; ++i) {
             if (key == density_keys[i]) {
-                seed_threshold = (uint8_t)(70u - i * 10u);
+                seed_threshold = (uint16_t)(70u - i * 10u);
                 reseed_board(b);
                 break;
             }
@@ -970,9 +972,12 @@ handle_key(uint8_t key, uint8_t (*b)[CELL_ROW_BYTES]) {
 }
 #endif
 
-void main(void) {
+void __attribute__((minsize)) main(void) {
     psg_mute();
-    life_show_splash();
+    uint8_t start_key = life_show_splash();
+#if LIFE_DEBUG_DIRTY
+    debug_key_prev = start_key;
+#endif
     vdp_init_gfx2();
     vdp_clear_pattern_table();
     vdp_init_name_table();
@@ -982,12 +987,19 @@ void main(void) {
     }
     vdp_disable_sprites();
 
-    seed_board(cur, LIFE_SEED_THRESHOLD);
-    build_active_rows(cur);
+#if LIFE_DEBUG_DIRTY
+    if (start_key == 'P' || start_key == 'p') {
+        next_scene(cur);
+    } else
+#endif
+    {
+        seed_board(cur, LIFE_SEED_THRESHOLD);
+        build_active_rows(cur);
+        mark_all_dirty();
+    }
     if (LIFE_DRAW_BORDER) {
         vdp_write_border_tiles();
     }
-    mark_all_dirty();
     vdp_write_dirty_patterns(cur);
     vdp_display_on();
 

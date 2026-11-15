@@ -521,32 +521,45 @@ _start:
         check(changes[0] == (1, 0x80) and changes[-1] == (1, 0xe0),
               "splash display was not blanked during setup")
         expected = bytearray(b" " * 768)
-        headings = dict(A=[2, 5, 7, 5, 5], E=[7, 4, 6, 4, 7], F=[7, 4, 6, 4, 4],
-                        G=[3, 4, 5, 5, 3], I=[7, 2, 2, 2, 7], L=[4, 4, 4, 4, 7],
-                        M=[9, 15, 15, 9, 9], O=[2, 5, 5, 5, 2])
-        for row, col, text in [(1, 2, "GAME OF"), (7, 8, "LIFE")]:
-            for letter in text:
-                columns = 4 if letter == "M" else 3
-                if letter != " ":
-                    for y, mask in enumerate(headings[letter]):
-                        for x in range(columns):
-                            if mask & (1 << (columns - x - 1)):
-                                expected[(row + y) * 32 + col + x] = 0x7f
-                col += columns + 1
-        text_lines = [(13, 9, "V0.3  NOV 2026"), (15, 3, "ZXCVB   DENSITY"),
-                      (16, 5, "R/K   RESTART / CLEAR"), (17, 7, "P   PRE-BAKED SCENES"),
-                      (18, 5, "G/S   GLIDER / SPACESHIP"), (19, 5, "N/M   ADD NOISE / BLOB"),
-                      (20, 5, "D/F   DIRTY / CLEAN TILES"), (21, 5, "1-9   ADD RANDOM ENTROPY"),
-                      (23, 9, "SPACE TO START")]
+        def stamp_banner(sx, sy, text, tile_base):
+            for ch in text:
+                if ch != " ":
+                    start = sym["splash_font"] + (ord(ch) - 32) * 7 - base
+                    for py in range(7):
+                        bits = rom[start + py]
+                        for px in range(5):
+                            if bits & (0x10 >> px):
+                                x, y = sx + px, sy + py
+                                idx = (1 + (y >> 1)) * 32 + (x >> 1)
+                                cur_mask = 0 if expected[idx] == 32 else (expected[idx] & 15)
+                                expected[idx] = tile_base | cur_mask | (1 << (((y & 1) << 1) | (x & 1)))
+                sx += 6
+        stamp_banner(11, 0, "GAME OF", 0x70)
+        stamp_banner(20, 9, "LIFE", 0x70)
+        stamp_banner(10, 10, ":", 0x60)
+        stamp_banner(50, 10, ";", 0x60)
+        text_lines = [(10, 9, "V0.3  NOV 2026"), (12, 3, "ZXCVB   DENSITY"),
+                      (13, 5, "R/K   RESTART / CLEAR"), (14, 7, "P   PREMADE SCENES"),
+                      (15, 5, "G/S   GLIDER / SPACESHIP"), (16, 5, "N/M   ADD NOISE / BLOB"),
+                      (17, 5, "D/F   DIRTY / CLEAN TILES"), (18, 5, "1-9   ADD RANDOM ENTROPY"),
+                      (21, 5, "SPACE   START RANDOM"), (22, 9, "P   START PREMADE")]
         for row, col, text in text_lines:
             expected[row * 32 + col:row * 32 + col + len(text)] = text.encode("ascii")
         check(vram[0x1800:0x1b00] == expected, "splash title/version/controls layout mismatch")
         check(vram[0x1b00] == 0xd0, "splash sprites were not disabled")
         colors = bytearray([0xf1] * 32)
-        colors[15] = 0x71
+        colors[12] = colors[13] = 0xb1
+        colors[14] = colors[15] = 0x71
         check(vram[0x2000:0x2020] == colors, "splash colors mismatch")
-        check(vram[0x3f8:0x400] == b"\xff" * 8, "splash block pattern mismatch")
-        for tile in set(expected) - {0x7f}:
+        for i in range(32):
+            m = i & 15
+            top = (0xe0 if m & 1 else 0) | (0x0e if m & 2 else 0)
+            bot = (0xe0 if m & 4 else 0) | (0x0e if m & 8 else 0)
+            pat = bytes([top, top, top, 0, bot, bot, bot, 0])
+            check(vram[(0x60 + i) * 8:(0x60 + i) * 8 + 8] == pat, "splash cell-grid tile mismatch")
+        for tile in set(expected):
+            if tile >= 0x60:
+                continue
             start = sym["splash_font"] + (tile - 32) * 7 - base
             pattern = bytes(value << 2 for value in rom[start:start + 7]) + b"\0"
             check(vram[tile * 8:tile * 8 + 8] == pattern, "splash font byte upload mismatch")
@@ -555,7 +568,7 @@ _start:
             # Render the captured Graphics I VRAM, not a separate mockup.
             import struct
             import zlib
-            palette = {1: (0, 0, 0), 7: (66, 235, 245), 15: (255, 255, 255)}
+            palette = {1: (0, 0, 0), 7: (66, 235, 245), 11: (230, 206, 128), 15: (255, 255, 255)}
             rows = []
             for y in range(192):
                 pixels = bytearray()
@@ -587,6 +600,13 @@ _start:
         split = changes.index((1, 0xe0)) + 1
         check(changes[split:split + 2] == [(1, 0x80), (0, 2)], "mode changed with display still enabled")
         check(registers == [2, 0xe0, 6, 0xff, 3, 0x36, 7, 1], "game VDP configuration was not restored")
+        # Also verify pressing P directly on the splash screen starts Premade Scene 0!
+        image_p = self.program_memory(sym, rom)
+        self.keyboard_stub(directory, image_p, sym, (0, ord("P")))
+        records_p, memory_p = self.simulate(directory, image_p, entry, [(0xa000, 0x5800)],
+                                            extra=["-s", hex(sym["step_board"])])
+        check(records_p[-1]["halt"] == "stop" and memory_p[sym["scene_index"]] == 1,
+              "P on splash did not start Premade Scene 0")
         mode = "cart" if "cart_header" in sym else "EA5"
         print(f"splash -O{opt} ({mode}): entry, captured font/layout/colors, SPACE gate and mode transition PASS", flush=True)
 

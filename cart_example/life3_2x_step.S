@@ -29,29 +29,36 @@ dirty_acc_buf:
 slot2_buf:
         .space  32
 win_ptrs_and_nz:
-        .space  14              ; [0]=buf_u [2]=buf_m [4]=buf_d [6]=nz_u [8]=nz_m [10]=nz_d [12]=saved_lr
+        .space  34              ; BSS state scalars (never touches KSCAN PAD!)
 
-        .equ    W_BUF_U,    win_ptrs_and_nz + 0
-        .equ    W_BUF_M,    win_ptrs_and_nz + 2
-        .equ    W_BUF_D,    win_ptrs_and_nz + 4
-        .equ    W_NZ_U,     win_ptrs_and_nz + 6
-        .equ    W_NZ_M,     win_ptrs_and_nz + 8
-        .equ    W_NZ_D,     win_ptrs_and_nz + 10
-        .equ    W_SAVED_LR, win_ptrs_and_nz + 12
+        .equ    W_BUF_U,       win_ptrs_and_nz + 0
+        .equ    W_BUF_M,       win_ptrs_and_nz + 2
+        .equ    W_BUF_D,       win_ptrs_and_nz + 4
+        .equ    W_NZ_U,        win_ptrs_and_nz + 6
+        .equ    W_NZ_M,        win_ptrs_and_nz + 8
+        .equ    W_NZ_D,        win_ptrs_and_nz + 10
+        .equ    W_SAVED_LR,    win_ptrs_and_nz + 12
+        .equ    W_SAVED_SP,    win_ptrs_and_nz + 14
+        .equ    PAD_SRC_BASE,  win_ptrs_and_nz + 16
+        .equ    PAD_DST_BASE,  win_ptrs_and_nz + 18
+        .equ    PAD_CUR_TY,    win_ptrs_and_nz + 20
+        .equ    PAD_SRC_PTR,   win_ptrs_and_nz + 22
+        .equ    PAD_DST_PTR,   win_ptrs_and_nz + 24
+        .equ    PAD_ROW_LIVE,  win_ptrs_and_nz + 26
+        .equ    PAD_DY_CNT,    win_ptrs_and_nz + 28
+        .equ    PAD_HAVE_WIN,  win_ptrs_and_nz + 30
+        .equ    PAD_VDP_TMP,   win_ptrs_and_nz + 32
 
-; Scratchpad PAD map (0x8300..0x831F = WP; 0x8374..0x837F untouched!)
-        .equ    PAD_SLOT0,     0x8320   ; 16 words (32B): 0x8320..0x833F
-        .equ    PAD_SLOT1,     0x8340   ; 16 words (32B): 0x8340..0x835F
-        .equ    PAD_SRC_BASE,  0x8360
-        .equ    PAD_DST_BASE,  0x8362
-        .equ    PAD_CUR_TY,    0x8364
-        .equ    PAD_SRC_PTR,   0x8366
-        .equ    PAD_DST_PTR,   0x8368
-        .equ    PAD_ROW_LIVE,  0x836A
-        .equ    PAD_DY_CNT,    0x836C
-        .equ    PAD_HAVE_WIN,  0x836E
-        .equ    PAD_VDP_TMP,   0x8370   ; 1 word:         0x8370..0x8371
-        .equ    PAD_CODE,      0x8380   ; 53 words (106B): 0x8380..0x83E9
+; KSCAN-safe Scratchpad PAD map:
+;   0x8300..0x831F = Workspace (WP = 0x8300)
+;   0x8320..0x8373 = PAD_CODE (42 words = 84B; stops strictly before 0x8374!)
+;   0x8374..0x837F = UNTOUCHED (KSCAN key/mode/status)
+;   0x8380..0x839F = PAD_SLOT0 (32B)
+;   0x83A0..0x83BF = PAD_SLOT1 (32B; stops strictly before 0x83C0!)
+;   0x83C0..0x83FF = UNTOUCHED (KSCAN state 0x83C6..0x83CA, VDPR1 shadow 0x83D4, GPLWS 0x83E0..0x83FF!)
+        .equ    PAD_CODE,      0x8320
+        .equ    PAD_SLOT0,     0x8380
+        .equ    PAD_SLOT1,     0x83A0
         .equ    PAD_SLOT2,     slot2_buf
         .equ    PAD_DIRTY_ACC, dirty_acc_buf
 
@@ -195,19 +202,8 @@ compute_hrow:
 ; ============================================================================
 pad_vrow_template:
 .Lpv_loop:
-        SLA  R0, 1
         JOC  .Lpv_active
-        INCT R1
-        CLR  *R2+
-        INCT R3
-        INCT R3
-        INCT R4
-        INCT R4
-        INCT R5
-        INCT R5
-        INCT R11
-        JMP  .Lpv_next
-
+        B    @.Lpv_skip_rom
 .Lpv_active:
         MOV  *R1+, R14          ; mC
         MOV  *R3+, R6           ; hs_u
@@ -246,31 +242,46 @@ pad_vrow_template:
         SZC  R6, R7             ; R7 = res
 
         MOV  R7, *R2+
-        SOC  R7, @PAD_ROW_LIVE
+        SOC  R7, R10            ; R10 = row_live_acc (in 0-wait PAD workspace!)
         XOR  R7, R14
         SOC  R14, *R11+
 
 .Lpv_next:
-        CI   R0, 0x8000
+        SLA  R0, 1
         JNE  .Lpv_loop
         B    *R13
 pad_vrow_template_end:
 
+.Lpv_skip_rom:
+        INCT R1
+        CLR  *R2+
+        AI   R3, 4
+        AI   R4, 4
+        AI   R5, 4
+        INCT R11
+        B    @(PAD_CODE + (.Lpv_next - pad_vrow_template))
+
 combine_vrow_pad:
         MOV  R0, R0
         JEQ  .Lv_all_zero
-        MOV  R11, R13
+        MOV  R11, @W_SAVED_LR
+        MOV  R10, @W_SAVED_SP
+        MOV  @PAD_ROW_LIVE, R10
+        LI   R13, .Lpv_done
         MOV  @W_BUF_U, R3
         MOV  @W_BUF_M, R4
         MOV  @W_BUF_D, R5
         LI   R11, PAD_DIRTY_ACC
         ANDI R0, 0xFF00
         ORI  R0, 0x0080
+        SLA  R0, 1
         B    @PAD_CODE
+.Lpv_done:
+        MOV  R10, @PAD_ROW_LIVE
+        MOV  @W_SAVED_SP, R10
+        MOV  @W_SAVED_LR, R11
+        B    *R11
 
-combine_vrow:
-        MOV  R0, R0
-        JNE  .Lv_rom_nonempty
 .Lv_all_zero:
         CLR  *R2+
         CLR  *R2+
@@ -282,16 +293,6 @@ combine_vrow:
         CLR  *R2+
         AI   R1, 16
         B    *R11
-
-.Lv_rom_nonempty:
-        MOV  R11, R13
-        MOV  @W_BUF_U, R3
-        MOV  @W_BUF_M, R4
-        MOV  @W_BUF_D, R5
-        LI   R11, PAD_DIRTY_ACC
-        ANDI R0, 0xFF00
-        ORI  R0, 0x0080
-        B    @pad_vrow_template
 
 ; ============================================================================
 ; Standalone C-callable row entry (for `row_tests` harness):
@@ -313,6 +314,14 @@ life_compute_row:
         MOV  R2, *R10
         DECT R10
         MOV  R3, *R10
+
+        LI   R4, pad_vrow_template
+        LI   R5, PAD_CODE
+        LI   R6, (pad_vrow_template_end - pad_vrow_template) / 2
+.Llcr_cp:
+        MOV  *R4+, *R5+
+        DEC  R6
+        JNE  .Llcr_cp
 
         MOV  R0, R1
         LI   R2, PAD_SLOT0
@@ -340,7 +349,7 @@ life_compute_row:
         MOV  *R10+, R2
         AI   R10, 2
         MOV  *R10+, R1
-        BL   @combine_vrow
+        BL   @combine_vrow_pad
 
         MOV  *R10+, R15
         MOV  *R10+, R14
