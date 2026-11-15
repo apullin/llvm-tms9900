@@ -72,50 +72,6 @@ win_ptrs_and_nz:
         .globl  life_draw_begin
         .globl  life_draw_end
 
-; Macro for one horizontal 16-cell word `w`:
-;   w_left = \rl (clobbered), w_cur = \rc (preserved!), w_right = \rr (preserved!)
-;   Writes `(hs, hc)` to `*R2+`, sets `\mask_bit` in `R0` if non-zero.
-        .macro  HWORD rl, rc, rr, mask_bit
-        MOV  \rc, \rc
-        JNE  1f
-        MOV  \rl, R4
-        SRL  R4, 1
-        JOC  1f
-        MOV  \rr, \rr
-        JLT  1f
-        CLR  *R2+
-        CLR  *R2+
-        JMP  4f
-1:
-        ORI  R0, \mask_bit
-        MOV  \rc, R4
-        SRL  R4, 1
-        SRL  \rl, 1
-        JNC  2f
-        ORI  R4, 0x8000
-2:
-        MOV  \rc, R8
-        SLA  R8, 1
-        MOV  \rr, R9
-        SLA  R9, 1
-        JNC  3f
-        INC  R8
-3:
-        MOV  R4, R13
-        XOR  \rc, R4            ; x = L ^ C
-        INV  R13
-        MOV  \rc, R14
-        SZC  R13, R14           ; C & L
-        MOV  R4, R13
-        XOR  R8, R4             ; hs = x ^ R
-        MOV  R4, *R2+
-        INV  R13
-        SZC  R13, R8            ; R & x
-        SOC  R14, R8            ; hc = (C & L) | (R & x)
-        MOV  R8, *R2+
-4:
-        .endm
-
 ; ============================================================================
 ; compute_hrow:
 ;   R1 = &row[0] (8 words), R2 = &pad_slot[0] (16 words in 0-wait PAD)
@@ -166,30 +122,59 @@ compute_hrow:
         MOV  R6, R15            ; R15 = row[0] (saved for word 7 right wrap)
         MOV  @12(R1), R5        ; R5  = row[7] (`&row[1] + 12 == &row[7]`)
         CLR  R0                 ; R0  = nz_mask
+        LI   R12, 0x8000        ; current word's mask bit (0x8000 >> w)
 
-        ; Unrolled rotating registers `(R5, R6, R7)` — zero register-move copies!
-        MOV  *R1+, R7           ; R7 = row[1]
-        HWORD R5, R6, R7, 0x8000
-
-        MOV  *R1+, R5           ; R5 = row[2]
-        HWORD R6, R7, R5, 0x4000
-
-        MOV  *R1+, R6           ; R6 = row[3]
-        HWORD R7, R5, R6, 0x2000
-
-        MOV  *R1+, R7           ; R7 = row[4]
-        HWORD R5, R6, R7, 0x1000
-
-        MOV  *R1+, R5           ; R5 = row[5]
-        HWORD R6, R7, R5, 0x0800
-
-        MOV  *R1+, R6           ; R6 = row[6]
-        HWORD R7, R5, R6, 0x0400
-
-        MOV  *R1+, R7           ; R7 = row[7]
-        HWORD R5, R6, R7, 0x0200
-
-        HWORD R6, R7, R15, 0x0100
+.Lh_wloop:
+        CI   R12, 0x0100
+        JEQ  .Lh_last_w
+        MOV  *R1+, R7
+        JMP  .Lh_have_rr
+.Lh_last_w:
+        MOV  R15, R7
+.Lh_have_rr:
+        MOV  R6, R6
+        JNE  .Lh_nz
+        MOV  R5, R4
+        SRL  R4, 1
+        JOC  .Lh_nz
+        MOV  R7, R7
+        JLT  .Lh_nz
+        CLR  *R2+
+        CLR  *R2+
+        JMP  .Lh_next
+.Lh_nz:
+        SOC  R12, R0
+        MOV  R6, R4
+        SRL  R4, 1
+        SRL  R5, 1
+        JNC  .Lh_nl
+        ORI  R4, 0x8000
+.Lh_nl:
+        MOV  R6, R8
+        SLA  R8, 1
+        MOV  R7, R9
+        SLA  R9, 1
+        JNC  .Lh_nr
+        INC  R8
+.Lh_nr:
+        MOV  R4, R13
+        XOR  R6, R4             ; x = L ^ C
+        INV  R13
+        MOV  R6, R14
+        SZC  R13, R14           ; C & L
+        MOV  R4, R13
+        XOR  R8, R4             ; hs = x ^ R
+        MOV  R4, *R2+
+        INV  R13
+        SZC  R13, R8            ; R & x
+        SOC  R14, R8            ; hc = (C & L) | (R & x)
+        MOV  R8, *R2+
+.Lh_next:
+        MOV  R6, R5
+        MOV  R7, R6
+        SRL  R12, 1
+        CI   R12, 0x0080
+        JNE  .Lh_wloop
         B    *R11
 
 ; ============================================================================
@@ -625,6 +610,28 @@ life_draw_begin:
         MOV  R15, *R10
 
         MOV  R0, R1             ; R1 = &b[0][0]
+        MOV  @expand8+2, R0     ; lazy one-time init of BSS `expand8[256]` (saves 476B ROM!)
+        JNE  .Lvd_exp_ready
+        CLR  R2
+        LI   R3, expand8
+.Lvd_exp_i:
+        MOV  R2, R4
+        SWPB R4
+        CLR  R5
+        LI   R6, 8
+.Lvd_exp_b:
+        SLA  R5, 2
+        SLA  R4, 1
+        JNC  .Lvd_exp_0
+        ORI  R5, 0x0003
+.Lvd_exp_0:
+        DEC  R6
+        JNE  .Lvd_exp_b
+        MOV  R5, *R3+
+        INC  R2
+        CI   R2, 256
+        JNE  .Lvd_exp_i
+.Lvd_exp_ready:
         LI   R2, dirty_tiles    ; R2 = &dirty_tiles[0][0]
         LI   R11, 0x4000        ; high byte of VDP write cmd (`0x40 + ty` in [15:8])
         LI   R12, 24            ; 24 tile rows

@@ -542,7 +542,7 @@ _start:
                       (13, 5, "R/K   RESTART / CLEAR"), (14, 7, "P   PREMADE SCENES"),
                       (15, 5, "G/S   GLIDER / SPACESHIP"), (16, 5, "N/M   ADD NOISE / BLOB"),
                       (17, 5, "D/F   DIRTY / CLEAN TILES"), (18, 5, "1-9   ADD RANDOM ENTROPY"),
-                      (21, 5, "SPACE   START RANDOM"), (22, 9, "P   START PREMADE")]
+                      (21, 3, "SPACE   START RANDOM"), (22, 7, "P   PREMADE MENU")]
         for row, col, text in text_lines:
             expected[row * 32 + col:row * 32 + col + len(text)] = text.encode("ascii")
         check(vram[0x1800:0x1b00] == expected, "splash title/version/controls layout mismatch")
@@ -600,13 +600,16 @@ _start:
         split = changes.index((1, 0xe0)) + 1
         check(changes[split:split + 2] == [(1, 0x80), (0, 2)], "mode changed with display still enabled")
         check(registers == [2, 0xe0, 6, 0xff, 3, 0x36, 7, 1], "game VDP configuration was not restored")
-        # Also verify pressing P directly on the splash screen starts Premade Scene 0!
+        # Verify Title -> P -> Premade Menu (held P ignored) -> B (Back to Title, held B ignored) -> P -> '3'!
         image_p = self.program_memory(sym, rom)
-        self.keyboard_stub(directory, image_p, sym, (0, ord("P")))
+        self.keyboard_stub(directory, image_p, sym,
+                           (ord("P"), ord("P"), 0, ord("B"), ord("B"), 0, ord("p"), 0, ord("3")))
         records_p, memory_p = self.simulate(directory, image_p, entry, [(0xa000, 0x5800)],
+                                            points=[sym["life_show_premade_menu"]],
                                             extra=["-s", hex(sym["step_board"])])
-        check(records_p[-1]["halt"] == "stop" and memory_p[sym["scene_index"]] == 1,
-              "P on splash did not start Premade Scene 0")
+        premade_hits = sum(int(e["pc"], 16) == sym["life_show_premade_menu"] for e in records_p[:-1])
+        check(records_p[-1]["halt"] == "stop" and premade_hits == 2 and memory_p[sym["scene_index"]] == 3,
+              "Splash <-> Premade menu navigation or held-key suppression failed")
         mode = "cart" if "cart_header" in sym else "EA5"
         print(f"splash -O{opt} ({mode}): entry, captured font/layout/colors, SPACE gate and mode transition PASS", flush=True)
 
@@ -851,22 +854,20 @@ _start:
             address = sym["rng_state"]
             check(int.from_bytes(memory[address:address + 2], "big") == state, f"{key} main RNG mismatch")
 
-        # Verify P cycles through all 6 pre-baked scenes (and wraps 5 -> 0) and K wipes clean.
+        # Verify In-Game P opens Premade Menu ('1' and '6' load scenes, 'B' resumes without reseed, and 'K' wipes)!
         image = self.program_memory(sym, rom)
-        keys = [32]
-        for _ in range(7):
-            keys += [ord("P"), 0]
-        keys += [ord("K"), None]
-        self.keyboard_stub(directory, image, sym, tuple(keys))
+        keys = (32, ord("P"), ord("P"), 0, ord("1"), 0,
+                ord("P"), 0, ord("6"), 0,
+                ord("P"), 0, ord("B"), ord("B"), 0, ord("K"), None)
+        self.keyboard_stub(directory, image, sym, keys)
         records, memory = self.simulate(directory, image, sym["_start"], [(0xa000, 0x5800)],
-                                       [sym["next_scene"], sym["wipe_board"]])
-        check(records[-1]["halt"] == "idle", "P/K key dispatch did not complete")
+                                       [sym["next_scene"], sym["wipe_board"], sym["reseed_board"]])
+        check(records[-1]["halt"] == "idle", "In-game P/B/K menu dispatch did not complete")
         next_hits = sum(int(e["pc"], 16) == sym["next_scene"] for e in records[:-1])
-        check(next_hits == 7 and memory[sym["scene_index"]] == 1, "P scene cycling wrap mismatch")
-        # After K + its VDP draw + one empty step before the None scan, BOTH boards,
-        # active_rows, and dirty_tiles must have settled to all-zero!
+        reseed_hits = sum(int(e["pc"], 16) == sym["reseed_board"] for e in records[:-1])
         wipe_hits = sum(int(e["pc"], 16) == sym["wipe_board"] for e in records[:-1])
-        check(wipe_hits == 8, "K did not invoke wipe_board")
+        check(next_hits == 2 and reseed_hits == 0 and wipe_hits == 3,
+              f"In-game Premade menu dispatch mismatch: next={next_hits} reseed={reseed_hits} wipe={wipe_hits}")
         check(memory[sym["board_a"]:sym["board_a"] + BOARD_BYTES] == bytes(BOARD_BYTES) and
               memory[sym["board_b"]:sym["board_b"] + BOARD_BYTES] == bytes(BOARD_BYTES),
               "K did not wipe boards")

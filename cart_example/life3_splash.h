@@ -81,7 +81,7 @@ splash_stamp_text2x(uint8_t *grid, uint16_t sx, uint16_t sy,
     }
 }
 
-static const char splash_lines[] =
+static const char splash_title_lines[] =
     "\x0A\x09" "V" LIFE_VERSION "  " LIFE_DATE "\0"
     "\x0C\x03" "ZXCVB   DENSITY\0"
     "\x0D\x05" "R/K   RESTART / CLEAR\0"
@@ -90,14 +90,42 @@ static const char splash_lines[] =
     "\x10\x05" "N/M   ADD NOISE / BLOB\0"
     "\x11\x05" "D/F   DIRTY / CLEAN TILES\0"
     "\x12\x05" "1-9   ADD RANDOM ENTROPY\0"
-    "\x15\x05" "SPACE   START RANDOM\0"
-    "\x16\x09" "P   START PREMADE\0";
+    "\x15\x03" "SPACE   START RANDOM\0"
+    "\x16\x07" "P   PREMADE MENU\0";
 
-/* Keep startup text/layout code out of the game loop and optimize it for ROM. */
-static uint8_t __attribute__((cold, noinline, minsize)) life_show_splash(void) {
+static const char splash_premade_lines[] =
+    "\x06\x05" "SELECT A PREMADE SCENE\0"
+    "\x09\x04" "1   GOSPER GLIDER GUN\0"
+    "\x0A\x04" "2   TWIN CROSSFIRE GUNS\0"
+    "\x0B\x04" "3   B-HEPTOMINO PUFFER\0"
+    "\x0C\x04" "4   SPACESHIP ARMADA\0"
+    "\x0D\x04" "5   OSCILLATOR GARDEN\0"
+    "\x0E\x04" "6   ACORN METHUSELAH\0"
+    "\x11\x05" "USE G S N M TO PERTURB\0"
+    "\x14\x02" "1-6   LAUNCH SCENE\0";
+
+static const char splash_back_title[]  = "\x15\x04" "B   BACK TO TITLE\0";
+static const char splash_back_ingame[] = "\x15\x04" "B   RESUME   T   TITLE\0";
+
+static void __attribute__((cold, noinline, minsize))
+splash_write_lines(const char *lines) {
+    const uint8_t *p = (const uint8_t *)lines;
+    while (*p) {
+        uint16_t r = p[0];
+        uint16_t c = p[1];
+        p += 2;
+        vdp_set_write_addr((uint16_t)(NAME_TABLE_ADDR + r * CHAR_COLS + c));
+        while (*p) {
+            vdp_data(*p++);
+        }
+        ++p;
+    }
+}
+
+static void __attribute__((cold, noinline, minsize))
+splash_begin_gfx1(void) {
     uint16_t i;
     uint16_t row;
-    uint8_t key;
 
     vdp_set_register(1, 0x80); /* Display off before changing modes. */
     vdp_set_register(0, 0x00); /* Graphics I: 32x24 characters. */
@@ -139,47 +167,109 @@ static uint8_t __attribute__((cold, noinline, minsize)) life_show_splash(void) {
             vdp_data((row == 3 || row == 7) ? 0u : (row < 3 ? top : bot));
         }
     }
+}
 
-    /* Build and stream the 32x8 banner rows (tile rows 1..8) to the Name Table. */
-    {
-        uint8_t grid[8 * CHAR_COLS];
-        for (i = 0; i < sizeof(grid); ++i) {
-            grid[i] = ' ';
+static uint8_t __attribute__((cold, noinline, minsize))
+splash_poll_key(uint8_t *held_io) {
+    uint8_t key;
+    *(volatile uint8_t *)0x8374 = 0;
+    key = (uint8_t)kbd_scan();
+    if (*held_io != 0) {
+        if (key == *held_io) {
+            return 0;
         }
+        *held_io = 0;
+    }
+    return key;
+}
+
+static void __attribute__((cold, noinline, minsize))
+splash_init_grid(uint8_t *grid, uint16_t count) {
+    uint16_t i;
+    splash_begin_gfx1();
+    for (i = 0; i < count; ++i) {
+        grid[i] = ' ';
+    }
+}
+
+static void __attribute__((cold, noinline, minsize))
+splash_flush_screen(const uint8_t *grid, uint16_t count, const char *lines) {
+    uint16_t i;
+    vdp_set_write_addr(NAME_TABLE_ADDR + 1 * CHAR_COLS);
+    for (i = 0; i < count; ++i) {
+        vdp_data(grid[i]);
+    }
+    splash_write_lines(lines);
+}
+
+static uint8_t __attribute__((cold, noinline, minsize))
+life_show_premade_menu(uint8_t in_game, uint8_t *held_io) {
+    uint8_t grid[4 * CHAR_COLS];
+
+    splash_init_grid(grid, sizeof(grid));
+    splash_stamp_text2x(grid, 11, 0, "PREMADE", SPLASH_CYAN_BASE);
+    splash_stamp_text2x(grid, 4,  2, ":", SPLASH_YELLOW_BASE);
+    splash_stamp_text2x(grid, 56, 2, ";", SPLASH_YELLOW_BASE);
+    splash_flush_screen(grid, sizeof(grid), splash_premade_lines);
+    splash_write_lines(in_game ? splash_back_ingame : splash_back_title);
+    vdp_display_on();
+
+    asm volatile(".globl life_premade_ready\nlife_premade_ready:\n" ::: "memory");
+    for (;;) {
+        uint8_t key = splash_poll_key(held_io);
+        if (key >= '1' && key <= '6') {
+            *held_io = key;
+            return key;
+        }
+        if (key == 'B' || key == 'b' || key == ' ') {
+            *held_io = key;
+            return 'B';
+        }
+        if (in_game && (key == 'T' || key == 't')) {
+            *held_io = key;
+            return 'T';
+        }
+    }
+}
+
+/* Keep startup text/layout code out of the game loop and optimize it for ROM.
+ * Returns ' ' for random startup, or '1'..'6' for a chosen premade scene.
+ * Writes the raw triggering key to `*raw_key_out` so main suppresses repeats. */
+static uint8_t __attribute__((cold, noinline, minsize))
+life_show_splash(uint8_t *raw_key_out) {
+    uint8_t held = *raw_key_out;
+
+    for (;;) {
+        uint8_t grid[8 * CHAR_COLS];
+        splash_init_grid(grid, sizeof(grid));
         splash_stamp_text2x(grid, 11, 0, "GAME OF", SPLASH_CYAN_BASE);
         splash_stamp_text2x(grid, 20, 9, "LIFE", SPLASH_CYAN_BASE);
         splash_stamp_text2x(grid, 10, 10, ":", SPLASH_YELLOW_BASE);
         splash_stamp_text2x(grid, 50, 10, ";", SPLASH_YELLOW_BASE);
-        vdp_set_write_addr(NAME_TABLE_ADDR + 1 * CHAR_COLS);
-        for (i = 0; i < sizeof(grid); ++i) {
-            vdp_data(grid[i]);
-        }
-    }
+        splash_flush_screen(grid, sizeof(grid), splash_title_lines);
+        vdp_display_on();
 
-    {
-        const uint8_t *p = (const uint8_t *)splash_lines;
-        while (*p) {
-            uint16_t r = p[0];
-            uint16_t c = p[1];
-            p += 2;
-            vdp_set_write_addr((uint16_t)(NAME_TABLE_ADDR + r * CHAR_COLS + c));
-            while (*p) {
-                vdp_data(*p++);
+        /* Named checkpoints let the CPU tests inspect the finished screen and
+         * prove that keyboard gating completes before any Life update. */
+        asm volatile(".globl life_splash_ready\nlife_splash_ready:\n" ::: "memory");
+        for (;;) {
+            uint8_t key = splash_poll_key(&held);
+            if (key == ' ') {
+                *raw_key_out = key;
+                asm volatile(".globl life_splash_end\nlife_splash_end:\n" ::: "memory");
+                return ' ';
             }
-            ++p;
+            if (key == 'P' || key == 'p') {
+                held = key;
+                uint8_t pick = life_show_premade_menu(0, &held);
+                if (pick >= '1' && pick <= '6') {
+                    *raw_key_out = held;
+                    return pick;
+                }
+                break; /* 'B' / SPACE -> redraw main title screen! */
+            }
         }
     }
-    vdp_display_on();
-
-    /* Named checkpoints let the CPU tests inspect the finished screen and
-     * prove that keyboard gating completes before any Life update. */
-    asm volatile(".globl life_splash_ready\nlife_splash_ready:\n" ::: "memory");
-    do {
-        *(volatile uint8_t *)0x8374 = 0; /* Full keyboard scan, like the game. */
-        key = (uint8_t)kbd_scan();
-    } while (key != ' ' && key != 'P' && key != 'p');
-    asm volatile(".globl life_splash_end\nlife_splash_end:\n" ::: "memory");
-    return key;
 }
 
 #endif
