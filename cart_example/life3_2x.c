@@ -286,8 +286,8 @@ typedef uint16_t u16_alias __attribute__((__may_alias__));
 
 /* Updates already cover entire tile rows, so activity needs one byte per row.
  * Dirty flags stay per tile for D/F visual debugging and row writeback. */
-static uint8_t active_rows[LIFE_TILES_H];
-static uint8_t dirty_tiles[LIFE_TILES_H][LIFE_TILES_W] __attribute__((aligned(2)));
+uint8_t active_rows[LIFE_TILES_H] __attribute__((aligned(2)));
+uint8_t dirty_tiles[LIFE_TILES_H][LIFE_TILES_W] __attribute__((aligned(2)));
 #if LIFE_DEBUG_DIRTY
 static uint8_t dirty_prev[LIFE_TILES_H][LIFE_TILES_W];
 static uint8_t debug_dirty_enabled;
@@ -306,7 +306,7 @@ static const uint8_t bit_mask[8] = {
 
 /* Each entry doubles eight source pixels into two bytes. High byte is the
  * left tile, low byte the right tile; each scanline is then written twice. */
-static const uint16_t expand8[256] = {
+const uint16_t expand8[256] = {
     0x0000, 0x0003, 0x000c, 0x000f, 0x0030, 0x0033, 0x003c, 0x003f,
     0x00c0, 0x00c3, 0x00cc, 0x00cf, 0x00f0, 0x00f3, 0x00fc, 0x00ff,
     0x0300, 0x0303, 0x030c, 0x030f, 0x0330, 0x0333, 0x033c, 0x033f,
@@ -459,97 +459,10 @@ static void seed_board(uint8_t (*b)[CELL_ROW_BYTES], uint8_t threshold) {
 
 }
 
-static void __attribute__((noinline)) step_board(uint8_t (*src)[CELL_ROW_BYTES],
-                                                 uint8_t (*dst)[CELL_ROW_BYTES]) {
-    /* Tracepoint label for step timing (tms9900-trace). */
-    asm volatile(
-        ".globl life_step_begin\n"
-        "life_step_begin:\n"
-        :
-        :
-        : "memory");
-    uint16_t y;
-    uint16_t ty;
-
-    /* Clear dirty flags; each active destination row is fully overwritten. */
-    {
-        u16_alias *dp = (u16_alias *)&dirty_tiles[0][0];
-        uint16_t n = (uint16_t)((LIFE_TILES_H * LIFE_TILES_W) / 2);
-        uint16_t i;
-        for (i = 0; i < n; i++) {
-            dp[i] = 0;
-        }
-    }
-
-    /* Compute four cell rows per active tile row. Clear skipped rows because
-     * the other board buffer may still contain an older generation. */
-    for (ty = 0; ty < LIFE_TILES_H; ty++) {
-        if (!active_rows[ty]) {
-            u16_alias *words = (u16_alias *)&dst[ty * 4][0];
-            uint16_t wx;
-            for (wx = 0; wx < 4 * CELL_WORDS; ++wx) {
-                words[wx] = 0;
-            }
-            continue;
-        }
-
-        uint16_t y_base = (uint16_t)(ty << 2);
-        uint16_t dy;
-        for (dy = 0; dy < 4; dy++) {
-            y = y_base + dy;
-            uint16_t y_prev = (y == 0) ? (CELL_H - 1) : (y - 1);
-            uint16_t y_next = (y + 1 == CELL_H) ? 0 : (y + 1);
-            life_compute_row((uint16_t *)&src[y_prev][0],
-                             (uint16_t *)&src[y][0],
-                             (uint16_t *)&src[y_next][0],
-                             (uint16_t *)&dst[y][0]);
-        }
-    }
-
-    /* Compare generations to build the dirty tile table. At the same time,
-     * accumulate live words to prepare activity for the next generation. */
-    {
-        uint16_t ty2, wx2, row;
-        for (ty2 = 0; ty2 < LIFE_TILES_H; ++ty2) {
-            active_rows[ty2] = 0;
-        }
-        for (ty2 = 0; ty2 < LIFE_TILES_H; ty2++) {
-            uint16_t y_base = (uint16_t)(ty2 << 2);
-            uint16_t row_live = 0;
-            for (wx2 = 0; wx2 < CELL_WORDS; wx2++) {
-                uint16_t tile_x2 = (uint16_t)(wx2 << 2);
-                uint16_t live_acc = 0;
-                uint16_t dirty_acc = 0;
-                for (row = 0; row < 4; row++) {
-                    u16_alias *dw = (u16_alias *)&dst[y_base + row][0];
-                    u16_alias *sw = (u16_alias *)&src[y_base + row][0];
-                    live_acc |= dw[wx2];
-                    dirty_acc |= (uint16_t)(dw[wx2] ^ sw[wx2]);
-                }
-                row_live |= live_acc;
-                if (dirty_acc & 0xF000u)
-                    dirty_tiles[ty2][tile_x2] = 1;
-                if (dirty_acc & 0x0F00u)
-                    dirty_tiles[ty2][(uint16_t)(tile_x2 + 1)] = 1;
-                if (dirty_acc & 0x00F0u)
-                    dirty_tiles[ty2][(uint16_t)(tile_x2 + 2)] = 1;
-                if (dirty_acc & 0x000Fu)
-                    dirty_tiles[ty2][(uint16_t)(tile_x2 + 3)] = 1;
-            }
-            if (row_live) {
-                activate_row_and_neighbors(ty2);
-            }
-        }
-    }
-
-    /* Tracepoint label for step timing (tms9900-trace). */
-    asm volatile(
-        ".globl life_step_end\n"
-        "life_step_end:\n"
-        :
-        :
-        : "memory");
-}
+/* Full-board separable 3-row PAD CSA step & VDP streamer in life3_2x_step.S */
+extern void step_board(uint8_t (*src)[CELL_ROW_BYTES],
+                       uint8_t (*dst)[CELL_ROW_BYTES]);
+extern void vdp_write_dirty_patterns(uint8_t (*b)[CELL_ROW_BYTES]);
 
 static void vdp_write_tile_scaled(uint16_t ty, uint16_t tx,
                                   uint16_t tile_row_start,
@@ -609,69 +522,6 @@ static void mark_all_dirty(void) {
             dirty_tiles[ty][tx] = 1;
         }
     }
-}
-
-/* Keep the globally named trace labels unique when called from init and main. */
-static void __attribute__((noinline)) vdp_write_dirty_patterns(uint8_t (*b)[CELL_ROW_BYTES]) {
-    /* Tracepoint label for draw timing (tms9900-trace). */
-    asm volatile(
-        ".globl life_draw_begin\n"
-        "life_draw_begin:\n"
-        :
-        :
-        : "memory");
-
-    /* Row-streaming VDP writes: set address once per character row,
-     * stream all 32 tiles (256 contiguous VRAM bytes) sequentially.
-     * Dirty check at row level — skip rows with no dirty tiles. */
-    uint16_t vdp_addr = PATTERN_TABLE_ADDR;
-    uint16_t ty;
-
-    for (ty = 0; ty < LIFE_TILES_H; ty++) {
-        {
-            uint16_t row_dirty = 0;
-            uint16_t i;
-            for (i = 0; i < LIFE_TILES_W; i += 2) {
-                row_dirty |= *(u16_alias *)&dirty_tiles[ty][i];
-            }
-            if (!row_dirty) {
-                vdp_addr += 256;
-                continue;
-            }
-        }
-
-        vdp_set_write_addr(vdp_addr);
-
-        {
-            uint16_t cell_y = (uint16_t)(ty << 2);
-            uint16_t byte_idx;
-            for (byte_idx = 0; byte_idx < CELL_ROW_BYTES; byte_idx++) {
-                /* Stream the left tile, then its adjacent right tile. */
-                uint16_t e0 = expand8[b[cell_y + 0][byte_idx]];
-                uint16_t e1 = expand8[b[cell_y + 1][byte_idx]];
-                uint16_t e2 = expand8[b[cell_y + 2][byte_idx]];
-                uint16_t e3 = expand8[b[cell_y + 3][byte_idx]];
-                vdp_data((uint8_t)(e0 >> 8)); vdp_data((uint8_t)(e0 >> 8));
-                vdp_data((uint8_t)(e1 >> 8)); vdp_data((uint8_t)(e1 >> 8));
-                vdp_data((uint8_t)(e2 >> 8)); vdp_data((uint8_t)(e2 >> 8));
-                vdp_data((uint8_t)(e3 >> 8)); vdp_data((uint8_t)(e3 >> 8));
-                vdp_data((uint8_t)e0); vdp_data((uint8_t)e0);
-                vdp_data((uint8_t)e1); vdp_data((uint8_t)e1);
-                vdp_data((uint8_t)e2); vdp_data((uint8_t)e2);
-                vdp_data((uint8_t)e3); vdp_data((uint8_t)e3);
-
-            }
-        }
-        vdp_addr += 256;
-    }
-
-    /* Tracepoint label for draw timing (tms9900-trace). */
-    asm volatile(
-        ".globl life_draw_end\n"
-        "life_draw_end:\n"
-        :
-        :
-        : "memory");
 }
 
 static void vdp_write_border_tiles(void) {

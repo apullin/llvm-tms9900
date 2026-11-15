@@ -1,390 +1,767 @@
-; life3_2x_step.S - Hand-coded Game of Life inner loop for TMS9900
+; life3_2x_step.S - Ultra-fast Separable PAD-Resident CSA Engine & VDP Streamer
 ;
-; void life_compute_row(uint16_t *row_prev, uint16_t *row,
-;                       uint16_t *row_next, uint16_t *row_dst)
+; Exports:
+;   void life_compute_row(uint16_t *row_prev, uint16_t *row,
+;                         uint16_t *row_next, uint16_t *row_dst)
+;   void step_board(uint8_t (*src)[16], uint8_t (*dst)[16])
+;   void vdp_write_dirty_patterns(uint8_t (*b)[16])
 ;
-; Processes one full row (8 words, 128 cells) using sliding window + CSA.
-; CELL_WORDS = 8 (128 / 16).
-;
-; ABI: R0-R3 = params, R0-R9/R12 caller-saved, R13-R15 callee-saved
-;      R10 = SP, R11 = LR
-; This implementation additionally preserves R9 for its own register plan.
-;
-; IMPORTANT: R0 cannot be used as an index register on TMS9900.
-; When Ts=10,S=0000 the CPU treats it as symbolic (absolute) addressing.
-; So we move row_prev (R0 on entry) into R3 and use R0 as loop counter.
-;
-; Register plan:
-;   R3  = row_prev pointer (moved from R0 at entry)
-;   R1  = row pointer, advanced during the middle loop
-;   R2  = row_next pointer, advanced during the middle loop
-;   R0  = word byte offset for loop (words 1-6)
-;   row_dst saved to stack (only needed for stores)
-;   R4-R9, R12-R15 = 10 registers for CSA computation
-;   mC kept in saved R11 for words 1-6, stacked only for words 0 and 7
-;   CSA macro inlined for words 1-6, shared boundary helper called via BL
-;
-; Neighbor edge bits use one-bit shifts and carry instead of 15-bit shifts.
-; JNC must immediately follow that shift. INC inserts bit 0 safely because
-; SLA of the center has cleared it; ORI inserts bit 15 after a center SRL.
+; Key domain optimizations applied:
+;   1. Exact 2-instruction `HA(L,R)` recovery from buffered `FA(L,C,R)`:
+;        ms = hs_m ^ mC
+;        mc = hc_m & ~ms   (`SZC ms, hc_m`!)
+;      Combines 3-row separable horizontal reuse (`3x` fewer shifts/wraps/FAs)
+;      with the 5-instruction 8-neighbor Conway rule and 1-op dirty `mC ^ res`!
+;   2. Dense 8-word vertical kernel (`pad_dense_vrow`, 74 bytes) executes
+;      directly out of 16-bit 0-wait Scratchpad PAD (`0x8320..0x8369`), while
+;      leaving `0x8300..0x831F` (WP) and `0x8374..0x837F` (KSCAN/VDP) untouched!
+;   3. Unrolled horizontal row builder (`HWORD` macro) with 1st-word empty-row
+;      fast exit and per-word zero-neighborhood skip.
+;   4. Word-loaded assembly VDP row streamer using `SWPB` and register-resident
+;      `e0..e3` (zero inner-loop spills).
+
+        .bss
+        .p2align 1
+old_active_buf:
+        .space  24
+dirty_acc_buf:
+        .space  16
+slot2_buf:
+        .space  32
+win_ptrs_and_nz:
+        .space  14              ; [0]=buf_u [2]=buf_m [4]=buf_d [6]=nz_u [8]=nz_m [10]=nz_d [12]=saved_lr
+
+        .equ    W_BUF_U,    win_ptrs_and_nz + 0
+        .equ    W_BUF_M,    win_ptrs_and_nz + 2
+        .equ    W_BUF_D,    win_ptrs_and_nz + 4
+        .equ    W_NZ_U,     win_ptrs_and_nz + 6
+        .equ    W_NZ_M,     win_ptrs_and_nz + 8
+        .equ    W_NZ_D,     win_ptrs_and_nz + 10
+        .equ    W_SAVED_LR, win_ptrs_and_nz + 12
+
+; Scratchpad PAD map (0x8300..0x831F = WP; 0x8374..0x837F untouched!)
+        .equ    PAD_SLOT0,     0x8320   ; 16 words (32B): 0x8320..0x833F
+        .equ    PAD_SLOT1,     0x8340   ; 16 words (32B): 0x8340..0x835F
+        .equ    PAD_SRC_BASE,  0x8360
+        .equ    PAD_DST_BASE,  0x8362
+        .equ    PAD_CUR_TY,    0x8364
+        .equ    PAD_SRC_PTR,   0x8366
+        .equ    PAD_DST_PTR,   0x8368
+        .equ    PAD_ROW_LIVE,  0x836A
+        .equ    PAD_DY_CNT,    0x836C
+        .equ    PAD_HAVE_WIN,  0x836E
+        .equ    PAD_VDP_TMP,   0x8370   ; 1 word:         0x8370..0x8371
+        .equ    PAD_CODE,      0x8380   ; 53 words (106B): 0x8380..0x83E9
+        .equ    PAD_SLOT2,     slot2_buf
+        .equ    PAD_DIRTY_ACC, dirty_acc_buf
 
         .text
+        .p2align 1
         .globl  life_compute_row
+        .globl  step_board
+        .globl  life_step_begin
+        .globl  life_step_end
+        .globl  vdp_write_dirty_patterns
+        .globl  life_draw_begin
+        .globl  life_draw_end
 
-; Full/half adders sum eight neighbors in 16 independent bit lanes.
-; stacked_center=1 is used only by the shared boundary helper; the middle
-; loop keeps the original center in R11 and uses the same emitted logic.
-        .macro LIFE_RULE stacked_center
-        ; --- FA1(u_left=R4, uC=R6, u_right=R5) -> sum1=R12, carry1=R5 ---
-        MOV  R4, R12           ; R12 = u_left
-        XOR  R6, R12           ; R12 = u_left ^ uC
-        MOV  R12, R15          ; R15 = u_left ^ uC
-        XOR  R5, R12           ; R12 = sum1
-
-        INV  R4                ; ~u_left
-        SZC  R4, R6            ; R6 = uC & u_left
-        INV  R15               ; ~(u_left ^ uC)
-        SZC  R15, R5           ; R5 = u_right & (u_left ^ uC)
-        SOC  R6, R5            ; R5 = carry1
-
-        ; --- FA2(m_left=R7, m_right=R8, d_left=R9) -> sum2=R4, carry2=R9 ---
-        MOV  R7, R4            ; R4 = m_left
-        XOR  R8, R4            ; R4 = m_left ^ m_right
-        MOV  R4, R6            ; R6 = m_left ^ m_right
-        XOR  R9, R4            ; R4 = sum2
-
-        INV  R7                ; ~m_left
-        SZC  R7, R8            ; R8 = m_right & m_left
-        INV  R6                ; ~(m_left ^ m_right)
-        SZC  R6, R9            ; R9 = d_left & (m_left ^ m_right)
-        SOC  R8, R9            ; R9 = carry2
-
-        ; --- HA(dC=R13, d_right=R14) -> sum3=R6, carry3=R14 ---
-        MOV  R13, R6           ; R6 = dC
-        XOR  R14, R6           ; R6 = sum3
-        INV  R13               ; ~dC
-        SZC  R13, R14          ; R14 = d_right & dC = carry3
-
-        ; --- Stage 2: FA(sum1=R12, sum2=R4, sum3=R6) -> bit0=R7, carry4=R6 ---
-        MOV  R12, R7           ; R7 = sum1
-        XOR  R4, R7            ; R7 = sum1 ^ sum2
-        MOV  R7, R8            ; R8 = sum1 ^ sum2
-        XOR  R6, R7            ; R7 = bit0
-
-        INV  R12               ; ~sum1
-        SZC  R12, R4           ; R4 = sum2 & sum1
-        INV  R8                ; ~(sum1 ^ sum2)
-        SZC  R8, R6            ; R6 = sum3 & (sum1 ^ sum2)
-        SOC  R4, R6            ; R6 = carry4
-
-        ; --- Stage 2: FA(carry1=R5, carry2=R9, carry3=R14) -> t_sum=R4, t_carry=R14 ---
-        MOV  R5, R4            ; R4 = carry1
-        XOR  R9, R4            ; R4 = carry1 ^ carry2
-        MOV  R4, R8            ; R8 = carry1 ^ carry2
-        XOR  R14, R4           ; R4 = t_sum
-
-        INV  R5                ; ~carry1
-        SZC  R5, R9            ; R9 = carry2 & carry1
-        INV  R8                ; ~(carry1 ^ carry2)
-        SZC  R8, R14           ; R14 = carry3 & (carry1 ^ carry2)
-        SOC  R9, R14           ; R14 = t_carry
-
-        ; The low weight-two bit is sum XOR carry4. Its conjunction
-        ; with their carry is always zero, so that carry cannot exclude
-        ; any candidate with bit1 set. Only t_carry needs to be masked.
-        XOR  R6, R4
-        .if \stacked_center
-        MOV  *R10+, R8         ; boundary word: restore the stacked center
-        SOC  R8, R7
-        .else
-        SOC  R11, R7          ; middle word: center kept in the saved LR register
-        .endif
-        SZC  R14, R4
-        INV  R7
-        SZC  R7, R4
-        MOV  R4, R5
+; Macro for one horizontal 16-cell word `w`:
+;   w_left = \rl (clobbered), w_cur = \rc (preserved!), w_right = \rr (preserved!)
+;   Writes `(hs, hc)` to `*R2+`, sets `\mask_bit` in `R0` if non-zero.
+        .macro  HWORD rl, rc, rr, mask_bit
+        MOV  \rc, \rc
+        JNE  1f
+        MOV  \rl, R4
+        SRL  R4, 1
+        JOC  1f
+        MOV  \rr, \rr
+        JLT  1f
+        CLR  *R2+
+        CLR  *R2+
+        JMP  4f
+1:
+        ORI  R0, \mask_bit
+        MOV  \rc, R4
+        SRL  R4, 1
+        SRL  \rl, 1
+        JNC  2f
+        ORI  R4, 0x8000
+2:
+        MOV  \rc, R8
+        SLA  R8, 1
+        MOV  \rr, R9
+        SLA  R9, 1
+        JNC  3f
+        INC  R8
+3:
+        MOV  R4, R13
+        XOR  \rc, R4            ; x = L ^ C
+        INV  R13
+        MOV  \rc, R14
+        SZC  R13, R14           ; C & L
+        MOV  R4, R13
+        XOR  R8, R4             ; hs = x ^ R
+        MOV  R4, *R2+
+        INV  R13
+        SZC  R13, R8            ; R & x
+        SOC  R14, R8            ; hc = (C & L) | (R & x)
+        MOV  R8, *R2+
+4:
         .endm
 
+; ============================================================================
+; compute_hrow:
+;   R1 = &row[0] (8 words), R2 = &pad_slot[0] (16 words in 0-wait PAD)
+;   Returns R0 = 8-bit non-zero word mask in [15:8]
+; ============================================================================
+compute_hrow:
+        ; Fast 1st-word check: dense rows exit in 2 instructions instead of 9!
+        MOV  *R1+, R6           ; R6 = w0
+        JNE  .Lh_w0_nz
+        MOV  *R1+, R7           ; w1
+        JNE  .Lh_scan_nz2
+        SOC  *R1+, R7           ; w2
+        SOC  *R1+, R7           ; w3
+        SOC  *R1+, R7           ; w4
+        SOC  *R1+, R7           ; w5
+        SOC  *R1+, R7           ; w6
+        SOC  *R1+, R7           ; w7
+        JNE  .Lh_rewind_all
+
+        ; Entire 128-cell row is zero: clear 16 PAD words & return R0 = 0
+        CLR  R0
+        CLR  *R2+
+        CLR  *R2+
+        CLR  *R2+
+        CLR  *R2+
+        CLR  *R2+
+        CLR  *R2+
+        CLR  *R2+
+        CLR  *R2+
+        CLR  *R2+
+        CLR  *R2+
+        CLR  *R2+
+        CLR  *R2+
+        CLR  *R2+
+        CLR  *R2+
+        CLR  *R2+
+        CLR  *R2+
+        B    *R11
+
+.Lh_rewind_all:
+        AI   R1, -14            ; R1 -> &row[1] (R6 is already 0 = row[0]!)
+        JMP  .Lh_w0_nz
+.Lh_scan_nz2:
+        DECT R1                 ; R1 -> &row[1] (R6 is already 0 = row[0]!)
+
+.Lh_w0_nz:
+        ; R1 currently points at `&row[1]`, and R6 already holds `row[0]`!
+        MOV  R6, R15            ; R15 = row[0] (saved for word 7 right wrap)
+        MOV  @12(R1), R5        ; R5  = row[7] (`&row[1] + 12 == &row[7]`)
+        CLR  R0                 ; R0  = nz_mask
+
+        ; Unrolled rotating registers `(R5, R6, R7)` — zero register-move copies!
+        MOV  *R1+, R7           ; R7 = row[1]
+        HWORD R5, R6, R7, 0x8000
+
+        MOV  *R1+, R5           ; R5 = row[2]
+        HWORD R6, R7, R5, 0x4000
+
+        MOV  *R1+, R6           ; R6 = row[3]
+        HWORD R7, R5, R6, 0x2000
+
+        MOV  *R1+, R7           ; R7 = row[4]
+        HWORD R5, R6, R7, 0x1000
+
+        MOV  *R1+, R5           ; R5 = row[5]
+        HWORD R6, R7, R5, 0x0800
+
+        MOV  *R1+, R6           ; R6 = row[6]
+        HWORD R7, R5, R6, 0x0400
+
+        MOV  *R1+, R7           ; R7 = row[7]
+        HWORD R5, R6, R7, 0x0200
+
+        HWORD R6, R7, R15, 0x0100
+        B    *R11
+
+; ============================================================================
+; Relocatable 37-word (74-byte) dense vertical CSA loop copied to 0x8320 PAD!
+; Inputs:
+;   R0  = 8 (word count)
+;   R1  = &src[y][0], R2 = &dst[y][0]
+;   R3  = buf_u, R4 = buf_m, R5 = buf_d
+;   R11 = &PAD_DIRTY_ACC[0], R13 = saved return PC
+; ============================================================================
+pad_vrow_template:
+.Lpv_loop:
+        SLA  R0, 1
+        JOC  .Lpv_active
+        INCT R1
+        CLR  *R2+
+        INCT R3
+        INCT R3
+        INCT R4
+        INCT R4
+        INCT R5
+        INCT R5
+        INCT R11
+        JMP  .Lpv_next
+
+.Lpv_active:
+        MOV  *R1+, R14          ; mC
+        MOV  *R3+, R6           ; hs_u
+        MOV  *R4+, R7           ; hs_m
+        XOR  R14, R7            ; ms = hs_m ^ mC
+        MOV  *R4+, R15          ; hc_m
+        SZC  R7, R15            ; mc = hc_m & ~ms
+        MOV  *R5+, R8           ; hs_d
+
+        MOV  R6, R12
+        XOR  R7, R6
+        INV  R12
+        SZC  R12, R7
+        MOV  R6, R12
+        XOR  R8, R6             ; R6 = bit0
+        INV  R12
+        SZC  R12, R8
+        SOC  R7, R8             ; R8 = c1
+
+        MOV  *R3+, R7           ; hc_u
+        MOV  *R5+, R9           ; hc_d
+        MOV  R7, R12
+        XOR  R15, R7
+        INV  R12
+        SZC  R12, R15
+        MOV  R7, R12
+        XOR  R9, R7             ; R7 = s2
+        INV  R12
+        SZC  R12, R9
+        SOC  R15, R9            ; R9 = c2
+
+        XOR  R8, R7
+        SZC  R9, R7
+        SOC  R14, R6
+        INV  R6
+        SZC  R6, R7             ; R7 = res
+
+        MOV  R7, *R2+
+        SOC  R7, @PAD_ROW_LIVE
+        XOR  R7, R14
+        SOC  R14, *R11+
+
+.Lpv_next:
+        CI   R0, 0x8000
+        JNE  .Lpv_loop
+        B    *R13
+pad_vrow_template_end:
+
+combine_vrow_pad:
+        MOV  R0, R0
+        JEQ  .Lv_all_zero
+        MOV  R11, R13
+        MOV  @W_BUF_U, R3
+        MOV  @W_BUF_M, R4
+        MOV  @W_BUF_D, R5
+        LI   R11, PAD_DIRTY_ACC
+        ANDI R0, 0xFF00
+        ORI  R0, 0x0080
+        B    @PAD_CODE
+
+combine_vrow:
+        MOV  R0, R0
+        JNE  .Lv_rom_nonempty
+.Lv_all_zero:
+        CLR  *R2+
+        CLR  *R2+
+        CLR  *R2+
+        CLR  *R2+
+        CLR  *R2+
+        CLR  *R2+
+        CLR  *R2+
+        CLR  *R2+
+        AI   R1, 16
+        B    *R11
+
+.Lv_rom_nonempty:
+        MOV  R11, R13
+        MOV  @W_BUF_U, R3
+        MOV  @W_BUF_M, R4
+        MOV  @W_BUF_D, R5
+        LI   R11, PAD_DIRTY_ACC
+        ANDI R0, 0xFF00
+        ORI  R0, 0x0080
+        B    @pad_vrow_template
+
+; ============================================================================
+; Standalone C-callable row entry (for `row_tests` harness):
+; ============================================================================
 life_compute_row:
-        ; === Prologue: save callee-saved regs + row_dst ===
         DECT R10
-        MOV  R11, *R10         ; save LR
-        DECT R10
-        MOV  R9, *R10          ; save R9
-        DECT R10
-        MOV  R13, *R10         ; save R13
-        DECT R10
-        MOV  R14, *R10         ; save R14
-        DECT R10
-        MOV  R15, *R10         ; save R15
-        DECT R10
-        MOV  R3, *R10          ; save row_dst
-        ; Stack: [SP+0]=row_dst [SP+2]=R15 [SP+4]=R14 [SP+6]=R13 [SP+8]=R9 [SP+10]=LR
-
-        ; Move row_prev from R0 to R3 (R0 can't be used as index register)
-        MOV  R0, R3
-
-        ; ============================================================
-        ; WORD 0: left neighbor wraps to word 7
-        ; Load: left=word7(@14), center=word0(*), right=word1(@2)
-        ; ============================================================
-        ; Top row
-        MOV  @14(R3), R5       ; prev[7] = left_word
-        MOV  *R3, R6           ; prev[0] = center_word (uC)
-        MOV  @2(R3), R7        ; prev[1] = right_word
-
-        ; u_left = (center >> 1) | (left << 15) -> R4
-        MOV  R6, R4
-        SRL  R4, 1
-        SRL  R5, 1
-        JNC  .Ledge_1
-        ORI  R4, 0x8000
-.Ledge_1:
-
-        ; u_right = (center << 1) | (right >> 15) -> R5
-        MOV  R6, R5
-        SLA  R5, 1
-        SLA  R7, 1
-        JNC  .Ledge_2
-        INC  R5
-.Ledge_2:
-        ; R4=u_left, R5=u_right, R6=uC
-
-        ; Middle row
-        MOV  @14(R1), R8       ; row[7]
-        MOV  *R1, R9           ; row[0] = mC
-        MOV  @2(R1), R14       ; row[1]
-
-        ; m_left -> R7
-        MOV  R9, R7
-        SRL  R7, 1
-        SRL  R8, 1
-        JNC  .Ledge_3
-        ORI  R7, 0x8000
-.Ledge_3:
-
-        ; m_right -> R8
-        MOV  R9, R8
-        SLA  R8, 1
-        SLA  R14, 1
-        JNC  .Ledge_4
-        INC  R8
-.Ledge_4:
-
-        ; Push mC
+        MOV  R11, *R10
         DECT R10
         MOV  R9, *R10
-
-        ; Bottom row
-        MOV  @14(R2), R15      ; next[7]
-        MOV  *R2, R13          ; next[0] = dC
-        MOV  @2(R2), R12       ; next[1]
-
-        ; d_left -> R9
-        MOV  R13, R9
-        SRL  R9, 1
-        SRL  R15, 1
-        JNC  .Ledge_5
-        ORI  R9, 0x8000
-.Ledge_5:
-
-        ; d_right -> R14
-        MOV  R13, R14
-        SLA  R14, 1
-        SLA  R12, 1
-        JNC  .Ledge_6
-        INC  R14
-.Ledge_6:
-
-        ; CSA + life rule
-        BL   @.Lcsa_life       ; result in R5, pops mC
-
-        ; Store word 0
-        MOV  *R10, R4          ; row_dst
-        MOV  R5, *R4           ; row_dst[0] = result
-
-        ; ============================================================
-        ; WORDS 1-6: sliding window loop
-        ; R0 = destination byte offset (2..12); source pointers advance.
-        ; ============================================================
-        LI   R0, 2             ; byte offset for word 1
-
-.Lloop:
-        ; At each iteration the pointer addresses the preceding word.
-        ; Advance it once, retaining center and right at offsets 0 and 2.
-        MOV  *R3+, R5
-        MOV  *R3, R6
-        MOV  @2(R3), R7
-
-        ; u_left -> R4
-        MOV  R6, R4
-        SRL  R4, 1
-        SRL  R5, 1
-        JNC  .Ledge_7
-        ORI  R4, 0x8000
-.Ledge_7:
-
-        ; u_right -> R5
-        MOV  R6, R5
-        SLA  R5, 1
-        SLA  R7, 1
-        JNC  .Ledge_8
-        INC  R5
-.Ledge_8:
-
-        ; Middle row
-        MOV  *R1+, R8
-        MOV  *R1, R9
-        MOV  @2(R1), R14
-
-        ; m_left -> R7
-        MOV  R9, R7
-        SRL  R7, 1
-        SRL  R8, 1
-        JNC  .Ledge_9
-        ORI  R7, 0x8000
-.Ledge_9:
-
-        ; m_right -> R8
-        MOV  R9, R8
-        SLA  R8, 1
-        SLA  R14, 1
-        JNC  .Ledge_10
-        INC  R8
-.Ledge_10:
-
-        ; The outer LR is already saved; no BL occurs in this middle loop.
-        MOV  R9, R11          ; preserve mC without a stack spill
-
-        ; Bottom row
-        MOV  *R2+, R15
-        MOV  *R2, R13
-        MOV  @2(R2), R12
-
-        ; d_left -> R9
-        MOV  R13, R9
-        SRL  R9, 1
-        SRL  R15, 1
-        JNC  .Ledge_11
-        ORI  R9, 0x8000
-.Ledge_11:
-
-        ; d_right -> R14
-        MOV  R13, R14
-        SLA  R14, 1
-        SLA  R12, 1
-        JNC  .Ledge_12
-        INC  R14
-.Ledge_12:
-
-        ; CSA + life rule
-        LIFE_RULE 0
-
-        ; Store
-        MOV  *R10, R4          ; row_dst
-        A    R0, R4
-        MOV  R5, *R4           ; row_dst[wx] = result
-
-        ; Next word
-        INCT R0
-        CI   R0, 12
-        JLE  .Lloop
-
-        ; ============================================================
-        ; WORD 7: right neighbor wraps to word 0
-        ; Source pointers now address word 6 after six postincrements.
-        ; Load left=word6(*), center=word7(@2), right=word0(@-12).
-        ; ============================================================
-        ; Top row
-        MOV  *R3, R5       ; prev[6]
-        MOV  @2(R3), R6       ; prev[7] = uC
-        MOV  @-12(R3), R7           ; prev[0] = right wrap
-
-        MOV  R6, R4
-        SRL  R4, 1
-        SRL  R5, 1
-        JNC  .Ledge_13
-        ORI  R4, 0x8000
-.Ledge_13:
-
-        MOV  R6, R5
-        SLA  R5, 1
-        SLA  R7, 1
-        JNC  .Ledge_14
-        INC  R5
-.Ledge_14:
-
-        ; Middle row
-        MOV  *R1, R8       ; row[6]
-        MOV  @2(R1), R9       ; row[7] = mC
-        MOV  @-12(R1), R14          ; row[0] = right wrap
-
-        MOV  R9, R7
-        SRL  R7, 1
-        SRL  R8, 1
-        JNC  .Ledge_15
-        ORI  R7, 0x8000
-.Ledge_15:
-
-        MOV  R9, R8
-        SLA  R8, 1
-        SLA  R14, 1
-        JNC  .Ledge_16
-        INC  R8
-.Ledge_16:
-
         DECT R10
-        MOV  R9, *R10
+        MOV  R13, *R10
+        DECT R10
+        MOV  R14, *R10
+        DECT R10
+        MOV  R15, *R10
+        DECT R10
+        MOV  R1, *R10
+        DECT R10
+        MOV  R2, *R10
+        DECT R10
+        MOV  R3, *R10
 
-        ; Bottom row
-        MOV  *R2, R15      ; next[6]
-        MOV  @2(R2), R13      ; next[7] = dC
-        MOV  @-12(R2), R12          ; next[0] = right wrap
+        MOV  R0, R1
+        LI   R2, PAD_SLOT0
+        BL   @compute_hrow
+        MOV  R0, @W_NZ_U
 
-        MOV  R13, R9
-        SRL  R9, 1
-        SRL  R15, 1
-        JNC  .Ledge_17
-        ORI  R9, 0x8000
-.Ledge_17:
+        MOV  @4(R10), R1
+        LI   R2, PAD_SLOT1
+        BL   @compute_hrow
+        MOV  R0, @W_NZ_M
 
-        MOV  R13, R14
-        SLA  R14, 1
-        SLA  R12, 1
-        JNC  .Ledge_18
-        INC  R14
-.Ledge_18:
+        MOV  @2(R10), R1
+        LI   R2, PAD_SLOT2
+        BL   @compute_hrow
 
-        BL   @.Lcsa_life
+        SOC  @W_NZ_U, R0
+        SOC  @W_NZ_M, R0
+        LI   R3, PAD_SLOT0
+        MOV  R3, @W_BUF_U
+        LI   R3, PAD_SLOT1
+        MOV  R3, @W_BUF_M
+        LI   R3, PAD_SLOT2
+        MOV  R3, @W_BUF_D
 
-        ; Store word 7
-        MOV  *R10, R4          ; row_dst
-        MOV  R5, @14(R4)       ; row_dst[7] = result
+        MOV  *R10+, R2
+        AI   R10, 2
+        MOV  *R10+, R1
+        BL   @combine_vrow
 
-        ; === Epilogue ===
-        AI   R10, 2            ; pop row_dst
         MOV  *R10+, R15
         MOV  *R10+, R14
         MOV  *R10+, R13
         MOV  *R10+, R9
-        MOV  *R10+, R11        ; restore LR
+        MOV  *R10+, R11
         B    *R11
 
-; ================================================================
-; CSA Tree + Life Rule subroutine
-;
-; Input registers (set by caller after shift computation):
-;   R4  = u_left       R7  = m_left      R9  = d_left
-;   R6  = uC           (mC on stack)     R13 = dC
-;   R5  = u_right      R8  = m_right     R14 = d_right
-;   *R10 = mC (pushed by caller)
-;
-; Output: R5 = life rule result
-; Side effect: pops mC (R10 += 2)
-; Clobbers: R4-R9, R12-R15
-; Preserves: R0-R3, R10 (net), R11
-; ================================================================
-.Lcsa_life:
-        LIFE_RULE 1
+; ============================================================================
+; Full-board generation step:
+;   void step_board(uint8_t (*src)[16] [R0], uint8_t (*dst)[16] [R1])
+; ============================================================================
+        .section .text.step_board,"ax",@progbits
+        .p2align 1
+step_board:
+life_step_begin:
+        DECT R10
+        MOV  R11, *R10
+        DECT R10
+        MOV  R13, *R10
+        DECT R10
+        MOV  R14, *R10
+        DECT R10
+        MOV  R15, *R10
 
-        B    *R11              ; return to caller
+        MOV  R0, @PAD_SRC_BASE
+        MOV  R1, @PAD_DST_BASE
+        MOV  R0, @PAD_SRC_PTR
+        MOV  R1, @PAD_DST_PTR
+        CLR  @PAD_HAVE_WIN
+
+        ; Install `pad_vrow_template` into 0-wait PAD (`0x8380..0x83E9`) on every step!
+        LI   R2, pad_vrow_template
+        LI   R3, PAD_CODE
+        LI   R4, (pad_vrow_template_end - pad_vrow_template) / 2
+.Lsb_cp_pad:
+        MOV  *R2+, *R3+
+        DEC  R4
+        JNE  .Lsb_cp_pad
+
+        ; Copy `active_rows[0..23]` (12 words) to `old_active_buf` & clear `active_rows`
+        LI   R2, active_rows
+        LI   R3, old_active_buf
+        LI   R4, 12
+.Lsb_cp_act:
+        MOV  *R2, *R3+
+        CLR  *R2+
+        DEC  R4
+        JNE  .Lsb_cp_act
+
+        CLR  @PAD_CUR_TY
+
+.Lsb_ty_loop:
+        MOV  @PAD_CUR_TY, R4
+        MOVB @old_active_buf(R4), R0
+        JNE  .Lsb_ty_active
+
+        ; ---- Inactive tile row ----
+        CLR  @PAD_HAVE_WIN
+        MOV  @PAD_DST_PTR, R2
+        LI   R3, 4
+.Lsb_clr_dst:
+        CLR  *R2+
+        CLR  *R2+
+        CLR  *R2+
+        CLR  *R2+
+        CLR  *R2+
+        CLR  *R2+
+        CLR  *R2+
+        CLR  *R2+
+        DEC  R3
+        JNE  .Lsb_clr_dst
+        MOV  R2, @PAD_DST_PTR
+
+        MOV  @PAD_SRC_PTR, R2
+        AI   R2, 64
+        MOV  R2, @PAD_SRC_PTR
+
+        MOV  @PAD_CUR_TY, R2
+        SLA  R2, 5
+        AI   R2, dirty_tiles
+        CLR  *R2+
+        CLR  *R2+
+        CLR  *R2+
+        CLR  *R2+
+        CLR  *R2+
+        CLR  *R2+
+        CLR  *R2+
+        CLR  *R2+
+        CLR  *R2+
+        CLR  *R2+
+        CLR  *R2+
+        CLR  *R2+
+        CLR  *R2+
+        CLR  *R2+
+        CLR  *R2+
+        CLR  *R2+
+        B    @.Lsb_next_ty
+
+.Lsb_ty_active:
+        LI   R2, PAD_DIRTY_ACC
+        CLR  *R2+
+        CLR  *R2+
+        CLR  *R2+
+        CLR  *R2+
+        CLR  *R2+
+        CLR  *R2+
+        CLR  *R2+
+        CLR  *R2+
+        CLR  @PAD_ROW_LIVE
+
+        MOV  @PAD_HAVE_WIN, R0
+        JNE  .Lsb_win_ready
+
+        LI   R3, PAD_SLOT0
+        MOV  R3, @W_BUF_U
+        LI   R3, PAD_SLOT1
+        MOV  R3, @W_BUF_M
+        LI   R3, PAD_SLOT2
+        MOV  R3, @W_BUF_D
+
+        MOV  @PAD_CUR_TY, R0
+        JNE  .Lsb_prev_norm
+        MOV  @PAD_SRC_BASE, R1
+        AI   R1, 1520
+        JMP  .Lsb_do_prev
+.Lsb_prev_norm:
+        MOV  @PAD_SRC_PTR, R1
+        AI   R1, -16
+.Lsb_do_prev:
+        MOV  @W_BUF_U, R2
+        BL   @compute_hrow
+        MOV  R0, @W_NZ_U
+
+        MOV  @PAD_SRC_PTR, R1
+        MOV  @W_BUF_M, R2
+        BL   @compute_hrow
+        MOV  R0, @W_NZ_M
+
+        SETO @PAD_HAVE_WIN
+
+.Lsb_win_ready:
+        LI   R0, 4
+        MOV  R0, @PAD_DY_CNT
+
+.Lsb_dy_loop:
+        MOV  @PAD_SRC_PTR, R1
+        AI   R1, 16
+        MOV  @PAD_CUR_TY, R0
+        CI   R0, 23
+        JNE  .Lsb_do_next
+        MOV  @PAD_DY_CNT, R0
+        CI   R0, 1
+        JNE  .Lsb_do_next
+        MOV  @PAD_SRC_BASE, R1
+.Lsb_do_next:
+        MOV  @W_BUF_D, R2
+        BL   @compute_hrow
+        MOV  R0, @W_NZ_D
+
+        SOC  @W_NZ_U, R0
+        SOC  @W_NZ_M, R0
+        MOV  @PAD_SRC_PTR, R1
+        MOV  @PAD_DST_PTR, R2
+        BL   @combine_vrow_pad
+        MOV  R1, @PAD_SRC_PTR
+        MOV  R2, @PAD_DST_PTR
+
+        MOV  @W_BUF_U, R0
+        MOV  @W_BUF_M, @W_BUF_U
+        MOV  @W_BUF_D, @W_BUF_M
+        MOV  R0, @W_BUF_D
+        MOV  @W_NZ_M, @W_NZ_U
+        MOV  @W_NZ_D, @W_NZ_M
+
+        DEC  @PAD_DY_CNT
+        JNE  .Lsb_dy_loop
+
+        ; Write `dirty_tiles[ty][0..31]` from `PAD_DIRTY_ACC[0..7]`
+        MOV  @PAD_CUR_TY, R2
+        SLA  R2, 5
+        AI   R2, dirty_tiles
+        LI   R1, PAD_DIRTY_ACC
+        LI   R3, 8
+        LI   R6, 0x0100
+.Lsb_dirty_w:
+        MOV  *R1+, R0
+        JNE  .Lsb_dirty_nz
+        CLR  *R2+
+        CLR  *R2+
+        DEC  R3
+        JNE  .Lsb_dirty_w
+        JMP  .Lsb_dirty_done
+.Lsb_dirty_nz:
+        CLR  R4
+        MOV  R0, R5
+        ANDI R5, 0xF000
+        JEQ  .Lsb_dn0
+        MOVB R6, R4
+.Lsb_dn0:
+        MOV  R0, R5
+        ANDI R5, 0x0F00
+        JEQ  .Lsb_dn1
+        INC  R4
+.Lsb_dn1:
+        MOV  R4, *R2+
+        CLR  R4
+        MOV  R0, R5
+        ANDI R5, 0x00F0
+        JEQ  .Lsb_dn2
+        MOVB R6, R4
+.Lsb_dn2:
+        ANDI R0, 0x000F
+        JEQ  .Lsb_dn3
+        INC  R4
+.Lsb_dn3:
+        MOV  R4, *R2+
+        DEC  R3
+        JNE  .Lsb_dirty_w
+
+.Lsb_dirty_done:
+        MOV  @PAD_ROW_LIVE, R0
+        JEQ  .Lsb_next_ty
+
+        LI   R6, 0x0100
+        MOV  @PAD_CUR_TY, R4
+        MOVB R6, @active_rows(R4)
+
+        MOV  R4, R5
+        JNE  .Lsb_act_prev_ok
+        LI   R5, 24
+.Lsb_act_prev_ok:
+        DEC  R5
+        MOVB R6, @active_rows(R5)
+
+        INC  R4
+        CI   R4, 24
+        JNE  .Lsb_act_next_ok
+        CLR  R4
+.Lsb_act_next_ok:
+        MOVB R6, @active_rows(R4)
+
+.Lsb_next_ty:
+        INC  @PAD_CUR_TY
+        MOV  @PAD_CUR_TY, R0
+        CI   R0, 24
+        JEQ  .Lsb_done
+        B    @.Lsb_ty_loop
+
+.Lsb_done:
+        MOV  *R10+, R15
+        MOV  *R10+, R14
+        MOV  *R10+, R13
+        MOV  *R10+, R11
+life_step_end:
+        B    *R11
+
+; ============================================================================
+; Assembly VDP Dirty-Row Pattern Streamer:
+;   void vdp_write_dirty_patterns(uint8_t (*b)[16] [R0])
+; ============================================================================
+        .section .text.vdp_write_dirty_patterns,"ax",@progbits
+        .p2align 1
+vdp_write_dirty_patterns:
+life_draw_begin:
+        DECT R10
+        MOV  R11, *R10
+        DECT R10
+        MOV  R13, *R10
+        DECT R10
+        MOV  R14, *R10
+        DECT R10
+        MOV  R15, *R10
+
+        MOV  R0, R1             ; R1 = &b[0][0]
+        LI   R2, dirty_tiles    ; R2 = &dirty_tiles[0][0]
+        LI   R11, 0x4000        ; high byte of VDP write cmd (`0x40 + ty` in [15:8])
+        LI   R12, 24            ; 24 tile rows
+
+.Lvd_row_loop:
+        MOV  *R2+, R0
+        SOC  *R2+, R0
+        SOC  *R2+, R0
+        SOC  *R2+, R0
+        SOC  *R2+, R0
+        SOC  *R2+, R0
+        SOC  *R2+, R0
+        SOC  *R2+, R0
+        SOC  *R2+, R0
+        SOC  *R2+, R0
+        SOC  *R2+, R0
+        SOC  *R2+, R0
+        SOC  *R2+, R0
+        SOC  *R2+, R0
+        SOC  *R2+, R0
+        SOC  *R2+, R0
+        JNE  .Lvd_row_dirty
+
+        AI   R1, 64
+        AI   R11, 0x0100
+        DEC  R12
+        JNE  .Lvd_row_loop
+        JMP  .Lvd_done
+
+.Lvd_row_dirty:
+        CLR  R0
+        MOVB R0, @0x8C02
+        MOVB R11, @0x8C02
+
+        ; Save R2 (`dirty_tiles` ptr) once per row in PAD so R2 is free for `e2`!
+        MOV  R2, @PAD_VDP_TMP
+
+        MOV  R1, R3
+        AI   R3, 16
+        MOV  R3, R4
+        AI   R4, 16
+        MOV  R4, R5
+        AI   R5, 16
+
+        LI   R0, 8              ; 8 word-columns
+
+.Lvd_word_col:
+        MOV  *R1+, R6           ; {b0_even, b0_odd}
+        MOV  *R3+, R7           ; {b1_even, b1_odd}
+        MOV  *R4+, R8           ; {b2_even, b2_odd}
+        MOV  *R5+, R9           ; {b3_even, b3_odd}
+
+        ; ---- Even byte-column (use `@0x831F` R15 low-byte PAD alias — saves 10 clks/byte!) ----
+        CLR  R15
+        MOVB R6, @0x831F
+        A    R15, R15
+        MOV  @expand8(R15), R13 ; e0
+        MOVB R13, @0x8C00
+        MOVB R13, @0x8C00
+
+        CLR  R15
+        MOVB R7, @0x831F
+        A    R15, R15
+        MOV  @expand8(R15), R14 ; e1
+        MOVB R14, @0x8C00
+        MOVB R14, @0x8C00
+
+        CLR  R15
+        MOVB R8, @0x831F
+        A    R15, R15
+        MOV  @expand8(R15), R2  ; e2
+        MOVB R2, @0x8C00
+        MOVB R2, @0x8C00
+
+        CLR  R15
+        MOVB R9, @0x831F
+        A    R15, R15
+        MOV  @expand8(R15), R15 ; e3
+        MOVB R15, @0x8C00
+        MOVB R15, @0x8C00
+
+        SWPB R13
+        MOVB R13, @0x8C00
+        MOVB R13, @0x8C00
+        SWPB R14
+        MOVB R14, @0x8C00
+        MOVB R14, @0x8C00
+        SWPB R2
+        MOVB R2, @0x8C00
+        MOVB R2, @0x8C00
+        SWPB R15
+        MOVB R15, @0x8C00
+        MOVB R15, @0x8C00
+
+        ; ---- Odd byte-column (low bytes of R6..R9) ----
+        ANDI R6, 0x00FF
+        A    R6, R6
+        MOV  @expand8(R6), R6
+        MOVB R6, @0x8C00
+        MOVB R6, @0x8C00
+
+        ANDI R7, 0x00FF
+        A    R7, R7
+        MOV  @expand8(R7), R7
+        MOVB R7, @0x8C00
+        MOVB R7, @0x8C00
+
+        ANDI R8, 0x00FF
+        A    R8, R8
+        MOV  @expand8(R8), R8
+        MOVB R8, @0x8C00
+        MOVB R8, @0x8C00
+
+        ANDI R9, 0x00FF
+        A    R9, R9
+        MOV  @expand8(R9), R9
+        MOVB R9, @0x8C00
+        MOVB R9, @0x8C00
+
+        SWPB R6
+        MOVB R6, @0x8C00
+        MOVB R6, @0x8C00
+        SWPB R7
+        MOVB R7, @0x8C00
+        MOVB R7, @0x8C00
+        SWPB R8
+        MOVB R8, @0x8C00
+        MOVB R8, @0x8C00
+        SWPB R9
+        MOVB R9, @0x8C00
+        MOVB R9, @0x8C00
+
+        DEC  R0
+        JNE  .Lvd_word_col
+
+        MOV  @PAD_VDP_TMP, R2
+        AI   R1, 48
+        AI   R11, 0x0100
+        DEC  R12
+        JEQ  .Lvd_done
+        B    @.Lvd_row_loop
+
+.Lvd_done:
+        MOV  *R10+, R15
+        MOV  *R10+, R14
+        MOV  *R10+, R13
+        MOV  *R10+, R11
+life_draw_end:
+        B    *R11
